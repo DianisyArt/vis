@@ -177,10 +177,16 @@ function loadIds(pk) {
 // заплатка рисуется шейдером: цвет + маска из WebP, глубина (расстояние до поверхности) из *_d.png → gl_FragDepth,
 // чтобы открытая дверца одного шкафа правильно перекрывала внутренность соседнего
 const PATCH_VS = 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }';
-const PATCH_FS = `uniform sampler2D map; uniform sampler2D dmap; uniform float op; varying vec2 vUv;
+// плавное открывание без лишних кадров: заплатка проявляется по глубине — сначала дальнее (нутро шкафа),
+// потом ближнее (открытая дверца/ящик «выходит» на зрителя); при закрытии — в обратном порядке
+const PATCH_FS = `uniform sampler2D map; uniform sampler2D dmap; uniform float op; uniform vec2 dr; varying vec2 vUv;
 void main() {
-  vec4 c = texture2D(map, vUv); float a = c.a * op; if (a < 0.02) discard;
+  vec4 c = texture2D(map, vUv);
   vec2 dd = texture2D(dmap, vUv).rg; float d = (floor(dd.r * 255.0 + 0.5) + dd.g) / 255.0;
+  float dn = d > 0.999 ? 1.0 : clamp((d - dr.x) / max(dr.y - dr.x, 1e-4), 0.0, 1.0);
+  const float S = 0.6;
+  float w = clamp((op * (1.0 + S) - (1.0 - dn)) / S, 0.0, 1.0);
+  float a = c.a * w * w * (3.0 - 2.0 * w); if (a < 0.02) discard;
   gl_FragDepth = min(d, 0.9999); gl_FragColor = vec4(c.rgb, a);
 }`;
 function rawTex(src, nearest) {
@@ -204,20 +210,25 @@ function loadPatch(pk, gid) {
     const g = new THREE.SphereGeometry(490, Math.max(4, Math.ceil((X1 - X0) / W * 160)), Math.max(4, Math.ceil((Y1 - Y0) / H * 80)),
       X0 / W * 2 * Math.PI, (X1 - X0) / W * 2 * Math.PI, Y0 / H * Math.PI, (Y1 - Y0) / H * Math.PI);
     g.scale(-1, 1, 1);
-    const u = { map: { value: rawTex(img) }, dmap: { value: dimg ? rawTex(dimg, true) : null }, op: { value: 0 } };
+    const u = { map: { value: rawTex(img) }, dmap: { value: dimg ? rawTex(dimg, true) : null }, op: { value: 0 }, dr: { value: new THREE.Vector2(0, 1) } };
     const mat = dimg ? new THREE.ShaderMaterial({ uniforms: u, vertexShader: PATCH_VS, fragmentShader: PATCH_FS, transparent: true, depthTest: true, depthWrite: true })
                      : Object.assign(mkMat(), { map: mkTex(img) });
     if (dimg) Object.defineProperty(mat, 'opacity', { get: () => u.op.value, set: (v) => { u.op.value = v; }, configurable: true });
     rec.mesh = new THREE.Mesh(g, mat); rec.mesh.renderOrder = 10; rec.mesh.visible = false; scene.add(rec.mesh);
     rec.alpha = readPixels(img, 0.25);                  // маска — для попадания пальцем по открытой дверце
-    if (dimg) rec.depth = readPixels(dimg, 0.5);  // глубина в полном разрешении, для пальца хватает половины        // глубина — кто ближе, тот и под пальцем
+    if (dimg) {
+      rec.depth = readPixels(dimg, 0.5);
+      let lo = 1, hi = 0; const D = rec.depth.d;          // диапазон глубины заплатки (без «далеко»-каймы)
+      for (let i = 0; i < D.length; i += 4) { const v = (D[i] + D[i + 1] / 255) / 255; if (v < 0.999) { if (v < lo) lo = v; if (v > hi) hi = v; } }
+      if (hi > lo) u.dr.value.set(lo, hi);
+    }  // глубина в полном разрешении, для пальца хватает половины        // глубина — кто ближе, тот и под пальцем
     if (info.pick) { try { rec.pick = readPixels(await loadImg('pano/parts/' + info.pick), 1); } catch (e) {} }
     return rec;
   });
   patches[key] = rec; return rec.p;
 }
 let order = 10;
-function fadeMesh(mesh, to, dur = 420) {
+function fadeMesh(mesh, to, dur = (to > 0 ? 950 : 750)) {
   mesh.visible = true; if (to > 0) mesh.renderOrder = ++order;
   tweens.push({ m: mesh.material, from: mesh.material.opacity, to, t0: performance.now(), dur, end: () => { if (to === 0) mesh.visible = false; } });
 }
@@ -429,7 +440,7 @@ document.getElementById('fold').onclick = () => { document.body.classList.add('f
 document.getElementById('unfold').onclick = () => { document.body.classList.remove('folded'); store.set('lipki_fold', '0'); };
 const hideBtn = document.getElementById('hideui');
 hideBtn.onclick = () => { const c = document.body.classList.toggle('clean'); hideBtn.setAttribute('aria-pressed', c); hideBtn.setAttribute('aria-label', c ? 'Показать кнопки' : 'Скрыть кнопки'); };
-window.__pano = { pick, setGroup, opened, get cur() { return cur; }, t2uv, dirAt, aim(x, y, z, f) { aimAt({ p: cur.p, look: [x, y, z] }); if (f) fov = f; } };
+window.__pano = { pick, setGroup, opened, patches, get cur() { return cur; }, t2uv, dirAt, aim(x, y, z, f) { aimAt({ p: cur.p, look: [x, y, z] }); if (f) fov = f; } };
 const floorsEl = document.getElementById('floors');
 function buildFloors() {
   const F = (META && META.floors) || []; floorsEl.innerHTML = ''; floorsEl.style.display = F.length > 1 ? '' : 'none';
