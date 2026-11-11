@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Кухня Липки</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=Unbounded:wght@500;600&display=swap">
+<style>
+/* Фото-просмотр 360°: панорамы Cycles; нажатие на дверцу накладывает её отрендеренную «заплатку»; 3D-режим — отдельная страница */
+:root {
+  --bg: #e9e4dc; --panel: rgba(250, 247, 242, 0.9); --ink: #2b2723; --muted: #6e665c; --line: rgba(43, 39, 35, 0.14);
+  --gold: #a8843f; --gold-ink: #fff9ee; --scene: #d9d2c7;
+  --f-display: "Unbounded", "Golos Text", system-ui, sans-serif;
+  --f-body: "Golos Text", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #1d1b19; --panel: rgba(32, 30, 27, 0.88); --ink: #efe9e1; --muted: #a79d90; --line: rgba(239, 233, 225, 0.14);
+  --gold: #c9a35c; --gold-ink: #1d1b19; --scene: #2a2723; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #1d1b19; --panel: rgba(32, 30, 27, 0.88); --ink: #efe9e1; --muted: #a79d90; --line: rgba(239, 233, 225, 0.14);
+  --gold: #c9a35c; --gold-ink: #1d1b19; --scene: #2a2723; color-scheme: dark; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--scene); color: var(--ink); font-family: var(--f-body); overflow: hidden; }
+canvas#c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+canvas#c:active { cursor: grabbing; }
+.top { position: fixed; top: calc(10px + env(safe-area-inset-top, 0px)); left: max(16px, env(safe-area-inset-left, 0px)); right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; pointer-events: none; }
+.card { pointer-events: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 10px 14px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); max-width: 340px; }
+.card h1 { font-family: var(--f-display); font-weight: 600; font-size: 16px; margin: 0 0 3px; }
+.card p { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.btn, .chip { border: 1px solid var(--line); background: var(--panel); color: var(--ink); font: 500 13px var(--f-body); border-radius: 999px; padding: 8px 13px; cursor: pointer; white-space: nowrap;
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+.btn.link { pointer-events: auto; }
+.bottom { position: fixed; left: max(16px, env(safe-area-inset-left, 0px)); right: max(16px, env(safe-area-inset-right, 0px)); bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start; pointer-events: none; }
+.row { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; max-width: 100%; padding: 2px; pointer-events: auto; }
+.row::-webkit-scrollbar { display: none; }
+.chip[aria-pressed="true"] { border-color: var(--gold); box-shadow: inset 0 0 0 1px var(--gold); }
+.chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.chip[aria-pressed="true"] .dot { background: var(--gold); }
+.seg { display: inline-flex; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 3px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); pointer-events: auto; }
+.seg button { border: 0; background: transparent; color: var(--muted); font: 500 13px var(--f-body); padding: 7px 13px; border-radius: 999px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--gold); color: var(--gold-ink); }
+.btn:focus-visible, .chip:focus-visible, .seg button:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+#hint { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 9px 14px;
+  font-size: 13.5px; color: var(--ink); pointer-events: none; transition: opacity .4s; white-space: nowrap; }
+#loading { position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); bottom: calc(14px + env(safe-area-inset-bottom, 0px)); font-size: 12px; color: var(--muted);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 6px 11px; pointer-events: none; transition: opacity .3s; }
+.spot { position: fixed; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%; border: 0; padding: 0; cursor: pointer; background: transparent; display: none; }
+.spot::before { content: ""; position: absolute; inset: 9px; border-radius: 50%; background: rgba(255, 252, 245, 0.35); border: 2px solid rgba(255, 252, 245, 0.95);
+  box-shadow: 0 2px 10px rgba(0,0,0,.25); transition: transform .15s; }
+.spot:hover::before { transform: scale(1.15); }
+.spot span { position: absolute; top: 44px; left: 50%; transform: translateX(-50%); font-size: 12px; color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.6); white-space: nowrap; pointer-events: none; }
+#toast { position: fixed; left: 50%; top: calc(64px + env(safe-area-inset-top, 0px)); transform: translateX(-50%); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 12px; padding: 8px 13px; font-size: 13.5px; pointer-events: none; opacity: 0; transition: opacity .25s; white-space: nowrap; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+#toast.on { opacity: 1; } #toast span { color: var(--muted); }
+canvas#c.hot { cursor: pointer; }
+.ibtn { pointer-events: auto; width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); color: var(--ink); display: inline-grid; place-items: center;
+  cursor: pointer; padding: 0; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); flex: none; }
+.ibtn svg { width: 18px; height: 18px; }
+.ibtn:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.card { position: relative; padding-right: 40px; }
+.card .fold { position: absolute; top: 6px; right: 6px; width: 28px; height: 28px; border: 0; background: transparent; color: var(--muted); border-radius: 50%; cursor: pointer; display: grid; place-items: center; }
+.card .fold svg { width: 16px; height: 16px; }
+#unfold { display: none; opacity: .55; width: 30px; height: 30px; }
+body.folded .card { display: none; } body.folded #unfold { display: inline-grid; }
+.tr { display: flex; gap: 8px; align-items: center; pointer-events: none; }
+/* «скрыть всё»: остаётся только эта же кнопка на своём месте, полупрозрачным глазком */
+#hideui .on { display: none; }
+body.clean #hideui .on { display: block; } body.clean #hideui .off { display: none; }
+body.clean #hideui { opacity: .45; }
+body.clean .top .card, body.clean #unfold, body.clean .top .tr > a, body.clean .bottom, body.clean #hint, body.clean #loading { visibility: hidden !important; }
+@media (max-width: 520px) { .card p { display: none; } .card h1 { font-size: 14px; margin: 0; } }
+</style>
+
+<canvas id="c" aria-label="Панорама кухни 360°: перетащите, чтобы осмотреться; нажмите на дверцу или ящик, чтобы открыть"></canvas>
+<div class="top">
+  <div class="card"><h1>Кухня, Липки</h1><p>Фото 360°. Нажмите на дверцу или ящик — откроется; в открытом ящике нажмите на внутренний. Перетащите, чтобы осмотреться; кружки на полу — другая точка.</p>
+    <button class="fold" id="fold" aria-label="Свернуть описание"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button></div>
+  <button class="ibtn" id="unfold" aria-label="Показать описание"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></button>
+  <div class="tr"><button class="ibtn" id="hideui" aria-label="Скрыть кнопки" aria-pressed="false"><svg class="off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.4 10.4 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.6 6.6A17.4 17.4 0 0 0 2 12s3.6 7 10 7a9.7 9.7 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg><svg class="on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
+</div>
+<div id="spots"></div>
+<div id="hint">Нажмите на дверцу или ящик</div>
+<div id="toast" role="status" aria-live="polite"></div>
+<div class="bottom">
+  <div class="seg" role="group" aria-label="Двери и ящики">
+    <button id="stClosed" aria-pressed="true">Закрыть всё</button><button id="stOpen" aria-pressed="false">Открыть всё</button>
+  </div>
+  <div class="seg" id="floors" role="group" aria-label="Пол"></div>
+  <div class="row" id="pts" role="group" aria-label="Точки обзора"></div>
+</div>
+<div id="loading">Загрузка…</div>
+
+<script type="importmap">{ "imports": { "three": "./lib/three.module.js" } }</script>
+<script type="module">
+import * as THREE from 'three';
+// точки съёмки в координатах Blender (м): x вдоль основной стены, y от стены в комнату (отрицательный), z вверх
+const PTS = [
+  { id: 'd', name: 'У острова', p: [2.30, -3.352, 1.6], look: [2.3, -0.3, 1.0] },
+  { id: 'g', name: 'У мойки', p: [2.70, -1.113, 1.6], look: [2.7, -0.2, 0.9] },
+  { id: 'h', name: 'У варочной', p: [0.81, -1.115, 1.6], look: [0.8, -0.2, 1.0] },
+  { id: 'f', name: 'У духовки', p: [4.41, -1.136, 1.6], look: [4.22, -0.5, 1.0] },
+  { id: 'e', name: 'Торец острова', p: [3.49, -2.26, 1.6], look: [1.5, -0.3, 1.2] },
+  { id: 'c', name: 'У буфета', p: [4.334, -3.299, 1.6], look: [5.1, -3.6, 1.3] },
+  { id: 'b', name: 'У холодильника', p: [0.86, -3.58, 1.6], look: [0.6, -4.6, 1.2] },
+  { id: 'a', name: 'Из гостиной', p: [2.14, -4.27, 1.6], look: [2.5, 0, 1.2] },
+];
+const CONFLICT = {};
+const LABEL = {
+  '600 у пенала': 'Ящик у пенала', '600 у пенала внутр 1': 'Внутренний ящик у пенала, верхний', '600 у пенала внутр 2': 'Внутренний ящик у пенала, нижний',
+  'Буфет HF 1': 'Буфет, подъёмник', 'Буфет HF 2': 'Буфет, подъёмник', 'Буфет верх 1': 'Буфет, верхняя дверца', 'Буфет верх 2': 'Буфет, верхняя дверца',
+  'Буфет верх 3': 'Буфет, верхняя дверца', 'Буфет верх 4': 'Буфет, верхняя дверца', 'Буфет ящик 1 верх': 'Буфет, ящик', 'Буфет ящик 1 низ': 'Буфет, нижний ящик',
+  'Буфет ящик 2 верх': 'Буфет, ящик', 'Буфет ящик 2 низ': 'Буфет, нижний ящик', 'Буфет ящик 1 верх внутр 1': 'Буфет, внутренний ящик',
+  'Верх 1 верх': 'Навесной, верхняя дверца', 'Верх 1 низ': 'Навесной, дверца', 'Верх 2 верх': 'Навесной, верхняя дверца', 'Верх 2 низ': 'Навесной, дверца',
+  'Верх 3 верх': 'Навесной, верхняя дверца', 'Верх 3 низ': 'Навесной, дверца', 'Духовка': 'Духовка', 'Мойка лев': 'Мойка, левая дверь', 'Мойка прав': 'Мойка, правая дверь',
+  'Морозильник': 'Морозильник', 'Холодильник': 'Холодильник', 'ПММ': 'Посудомойка', 'Пенал антресоль 1': 'Антресоль пенала', 'Пенал антресоль 2': 'Антресоль пенала',
+  'Пенал над духовкой': 'Шкаф над духовкой', 'Пенал ящик': 'Ящик под духовкой', 'Шкаф антресоль лев': 'Антресоль, левая', 'Шкаф антресоль прав': 'Антресоль, правая',
+  'Ящик 1 верх': 'Ящик', 'Ящик 1 низ': 'Нижний ящик', 'Ящик 2 верх': 'Ящик', 'Ящик 2 низ': 'Нижний ящик', 'Ящик 2 верх внутр 1': 'Внутренний ящик',
+  'Остров А1': 'Остров, ящик', 'Остров А2': 'Остров, ящик', 'Остров А3': 'Остров, ящик', 'Остров Б1': 'Остров, ящик', 'Остров Б2': 'Остров, ящик', 'Остров Б3': 'Остров, ящик',
+  'Остров А1 внутр 1': 'Остров, внутренний ящик', 'Остров А2 внутр 1': 'Остров, внутренний ящик', 'Остров А3 внутр 1': 'Остров, внутренний ящик',
+  'Остров Б1 внутр 1': 'Остров, внутренний ящик', 'Остров Б2 внутр 1': 'Остров, внутренний ящик', 'Остров Б3 внутр 1': 'Остров, внутренний ящик',
+  'Витрина низ': 'Витрина, нижняя дверь', 'Витрина верх': 'Витрина, верхняя дверь',
+};
+// Blender-направление → направление в сцене three (сфера с текстурой equirect, центр кадра = +Y Blender)
+const b2t = (d) => new THREE.Vector3(-d[1], d[2], -d[0]);
+const t2uv = (v) => { const dx = -v.z, dy = -v.x, dz = v.y, r = Math.hypot(dx, dy, dz) || 1;
+  return [0.5 + Math.atan2(dx, dy) / (2 * Math.PI), 0.5 - Math.asin(Math.max(-1, Math.min(1, dz / r))) / Math.PI]; };
+
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(70, 1, 0.1, 1000);
+const geo = new THREE.SphereGeometry(500, 96, 48); geo.scale(-1, 1, 1);
+const MAXT = renderer.capabilities.maxTextureSize;
+const mkMat = () => new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, depthTest: false });
+const layers = [new THREE.Mesh(geo, mkMat()), new THREE.Mesh(geo, mkMat())];
+layers.forEach((m, i) => { m.renderOrder = i; scene.add(m); });
+
+const loading = document.getElementById('loading'); let pending = 0;
+const busy = (d) => { pending += d; loading.style.opacity = pending > 0 ? 1 : 0; };
+function loadImg(src) {
+  busy(1);
+  return new Promise((res, rej) => { const img = new Image(); img.decoding = 'async';
+    img.onload = () => { busy(-1); res(img); }; img.onerror = () => { busy(-1); rej(new Error(src)); }; img.src = src; });
+}
+function mkTex(src) {
+  const t = new THREE.Texture(src); t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = true;
+  t.minFilter = THREE.LinearMipmapLinearFilter; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); t.needsUpdate = true; return t;
+}
+const cache = new Map();
+function loadPano(key) {
+  if (!cache.has(key)) cache.set(key, loadImg('pano/' + key + '.jpg').then(img => {
+    let src = img;
+    if (img.width > MAXT) { const cv = document.createElement('canvas'); cv.width = MAXT; cv.height = MAXT / 2; cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height); src = cv; }
+    return mkTex(src);
+  }));
+  return cache.get(key);
+}
+
+// ---- заплатки (каждая дверца отдельно) ----
+let META = null; const GBY = {};               // id группы → {id, movs, label}
+const opened = new Set();                       // id открытых групп (общие для всех точек)
+const ids = {};                                 // карта фасадов точки: {w, h, data}
+const patches = {};                             // pk_gid → {mesh, alpha, px, ready}
+const metaP = fetch('pano/parts/parts.json').then(r => r.json()).then(m => { META = m; m.groups.forEach(g => { GBY[g.id] = g; }); return m; }).catch(() => null);
+function loadIds(pk) {
+  if (!ids[pk]) ids[pk] = loadImg('pano/parts/' + pk + '_ids.png').then(img => {
+    const cv = document.createElement('canvas'); cv.width = img.width; cv.height = img.height; const c = cv.getContext('2d', { willReadFrequently: true });
+    c.drawImage(img, 0, 0); return { w: img.width, h: img.height, data: c.getImageData(0, 0, img.width, img.height).data };
+  }).catch(() => null);
+  return ids[pk];
+}
+// заплатка рисуется шейдером: цвет + маска из WebP, глубина (расстояние до поверхности) из *_d.png → gl_FragDepth,
+// чтобы открытая дверца одного шкафа правильно перекрывала внутренность соседнего
+const PATCH_VS = 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }';
+const PATCH_FS = `uniform sampler2D map; uniform sampler2D dmap; uniform float op; varying vec2 vUv;
+void main() {
+  vec4 c = texture2D(map, vUv); float a = c.a * op; if (a < 0.02) discard;
+  vec2 dd = texture2D(dmap, vUv).rg; float d = (floor(dd.r * 255.0 + 0.5) + dd.g) / 255.0;
+  gl_FragDepth = min(d, 0.9999); gl_FragColor = vec4(c.rgb, a);
+}`;
+function rawTex(src, nearest) {
+  const t = new THREE.Texture(src); t.colorSpace = THREE.NoColorSpace;
+  if (nearest) { t.minFilter = t.magFilter = THREE.NearestFilter; t.generateMipmaps = false; }
+  else { t.minFilter = THREE.LinearMipmapLinearFilter; t.generateMipmaps = true; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); }
+  t.needsUpdate = true; return t;
+}
+function readPixels(img, s) {
+  const cv = document.createElement('canvas'); cv.width = Math.max(1, Math.round(img.width * s)); cv.height = Math.max(1, Math.round(img.height * s));
+  const c = cv.getContext('2d', { willReadFrequently: true }); c.imageSmoothingEnabled = false; c.drawImage(img, 0, 0, cv.width, cv.height);
+  return { w: cv.width, h: cv.height, d: c.getImageData(0, 0, cv.width, cv.height).data };
+}
+function loadPatch(pk, gid) {
+  const key = pk + '_' + gid; if (patches[key]) return patches[key].p;
+  const info = META && META.parts[pk] && META.parts[pk][gid];
+  if (!info) return null;
+  const rec = { px: info.px, mesh: null, alpha: null, depth: null };
+  rec.p = Promise.all([loadImg('pano/parts/' + info.file), info.depth ? loadImg('pano/parts/' + info.depth) : null]).then(async ([img, dimg]) => {
+    const [W, H] = META.res, [X0, Y0, X1, Y1] = info.px;
+    const g = new THREE.SphereGeometry(490, Math.max(4, Math.ceil((X1 - X0) / W * 160)), Math.max(4, Math.ceil((Y1 - Y0) / H * 80)),
+      X0 / W * 2 * Math.PI, (X1 - X0) / W * 2 * Math.PI, Y0 / H * Math.PI, (Y1 - Y0) / H * Math.PI);
+    g.scale(-1, 1, 1);
+    const u = { map: { value: rawTex(img) }, dmap: { value: dimg ? rawTex(dimg, true) : null }, op: { value: 0 } };
+    const mat = dimg ? new THREE.ShaderMaterial({ uniforms: u, vertexShader: PATCH_VS, fragmentShader: PATCH_FS, transparent: true, depthTest: true, depthWrite: true })
+                     : Object.assign(mkMat(), { map: mkTex(img) });
+    if (dimg) Object.defineProperty(mat, 'opacity', { get: () => u.op.value, set: (v) => { u.op.value = v; }, configurable: true });
+    rec.mesh = new THREE.Mesh(g, mat); rec.mesh.renderOrder = 10; rec.mesh.visible = false; scene.add(rec.mesh);
+    rec.alpha = readPixels(img, 0.25);                  // маска — для попадания пальцем по открытой дверце
+    if (dimg) rec.depth = readPixels(dimg, 0.5);  // глубина в полном разрешении, для пальца хватает половины        // глубина — кто ближе, тот и под пальцем
+    if (info.pick) { try { rec.pick = readPixels(await loadImg('pano/parts/' + info.pick), 1); } catch (e) {} }
+    return rec;
+  });
+  patches[key] = rec; return rec.p;
+}
+let order = 10;
+function fadeMesh(mesh, to, dur = 420) {
+  mesh.visible = true; if (to > 0) mesh.renderOrder = ++order;
+  tweens.push({ m: mesh.material, from: mesh.material.opacity, to, t0: performance.now(), dur, end: () => { if (to === 0) mesh.visible = false; } });
+}
+const tweens = [];
+// мешающие друг другу элементы: из проверки геометрии в Blender (parts.json → conflicts) + известные вручную
+function conflictsOf(g) {
+  const s = new Set((META.conflicts && META.conflicts[g.id]) || []);
+  (CONFLICT[g.movs[0]] || []).forEach(nm => { const o = META.groups.find(x => x.movs[0] === nm); if (o) s.add(o.id); });
+  return [...s];
+}
+async function setGroup(gid, open, quiet) {
+  const g = GBY[gid]; if (!g) return;
+  const reqIds = (x) => (x.req || []).map(nm => (META.groups.find(y => !y.combo && y.movs[0] === nm) || {}).id).filter(Boolean);
+  if (open) {
+    conflictsOf(g).forEach(oid => { if (opened.has(oid)) { opened.delete(oid); } });   // что мешает — закрываем
+    reqIds(g).forEach(r => opened.add(r));                                                 // ящик — только при открытой двери
+    opened.add(gid);
+  } else {
+    opened.delete(gid);
+    META.groups.forEach(x => { if (reqIds(x).includes(gid)) opened.delete(x.id); });       // закрыли дверь — её ящики тоже
+  }
+  if (!quiet) toast(g, open);
+  if (open && !quiet && !(META.parts[cur.id] || {})[gid]) toast(g, open, true);
+  refresh(cur.id, false);
+}
+// что показывать в точке: открытые группы; у двустворчатых (сушка) при обеих открытых створках — общая заплатка,
+// иначе между створками осталась бы щель из закрытого кадра
+function shownSet(pk) {
+  const s = new Set(opened), P = META.parts[pk] || {};
+  META.groups.filter(g => g.combo).sort((a, b) => b.combo.length - a.combo.length).forEach(c => {
+    if (c.combo.every(m => s.has(m)) && P[c.id]) { c.combo.forEach(m => s.delete(m)); s.add(c.id); }
+  });
+  return s;
+}
+function refresh(pk, instant) {
+  Object.entries(patches).forEach(([k, r]) => { if (r.mesh && !k.startsWith(pk + '_')) { r.mesh.visible = false; r.mesh.material.opacity = 0; } });
+  if (mode !== 'single' || !META) return;
+  const want = shownSet(pk);
+  opened.forEach(gid => loadPatch(pk, gid));                 // маски створок нужны для попадания пальцем
+  Object.keys(META.parts[pk] || {}).forEach(async gidS => {
+    const gid = +gidS, rec0 = patches[pk + '_' + gid];
+    if (!want.has(gid)) { if (rec0 && rec0.mesh && rec0.mesh.visible && rec0.mesh.material.opacity > 0 && !rec0.fading0) { fadeMesh(rec0.mesh, 0); } return; }
+    const rec = await loadPatch(pk, gid);
+    if (!rec || cur.id !== pk || mode !== 'single' || !shownSet(pk).has(gid)) return;
+    if (rec.mesh.visible && rec.mesh.material.opacity >= 0.99) return;
+    if (instant) { rec.mesh.visible = true; rec.mesh.material.opacity = 1; rec.mesh.renderOrder = ++order; } else fadeMesh(rec.mesh, 1);
+  });
+}
+function applyOpened(pk, instant) { refresh(pk, instant); }
+function hideAllPatches() { Object.values(patches).forEach(r => { if (r.mesh && r.mesh.visible) fadeMesh(r.mesh, 0, 300); }); }
+
+// что под пальцем: сначала открытые заплатки (верхняя первой), потом карта фасадов
+function pick(u, v) {
+  if (!META) return 0;
+  const [W, H] = META.res, x = u * W, y = v * H;
+  let best = 0, bestD = 9;
+  for (const g of META.groups) {
+    if (!g.req || !g.req.length) continue;
+    const ok = g.req.every(nm => { const d = META.groups.find(y => !y.combo && y.movs[0] === nm); return d && opened.has(d.id); });
+    if (!ok) continue;
+    const r = patches[cur.id + '_' + g.id]; if (!r || !r.px) continue;
+    const [X0, Y0, X1, Y1] = r.px; if (x < X0 || x >= X1 || y < Y0 || y >= Y1) continue;
+    const fx = (x - X0) / (X1 - X0), fy = (y - Y0) / (Y1 - Y0);
+    if (opened.has(g.id) && r.alpha) { if (r.alpha.d[(Math.floor(fy * r.alpha.h) * r.alpha.w + Math.floor(fx * r.alpha.w)) * 4 + 3] > 140) return g.id; continue; }
+    if (r.pick && r.pick.d[(Math.floor(fy * r.pick.h) * r.pick.w + Math.floor(fx * r.pick.w)) * 4] > 127) return g.id;
+  }
+  for (const [k, r] of Object.entries(patches)) {
+    if (!k.startsWith(cur.id + '_') || !r.alpha || !opened.has(+k.split('_')[1])) continue;
+    const [X0, Y0, X1, Y1] = r.px; if (x < X0 || x >= X1 || y < Y0 || y >= Y1) continue;
+    const fx = (x - X0) / (X1 - X0), fy = (y - Y0) / (Y1 - Y0);
+    const ax = Math.floor(fx * r.alpha.w), ay = Math.floor(fy * r.alpha.h);
+    if (r.alpha.d[(ay * r.alpha.w + ax) * 4 + 3] <= 140) continue;
+    let d = 1 - r.mesh.renderOrder * 1e-4;                 // без глубины — по порядку открытия
+    if (r.depth) { const i = (Math.floor(fy * r.depth.h) * r.depth.w + Math.floor(fx * r.depth.w)) * 4; d = (r.depth.d[i] + r.depth.d[i + 1] / 255) / 255; }
+    if (d < bestD) { bestD = d; best = +k.split('_')[1]; }
+  }
+  if (best) return best;
+  const m = idsNow; if (!m) return 0;
+  const ix = Math.min(m.w - 1, Math.floor(u * m.w)), iy = Math.min(m.h - 1, Math.floor(v * m.h));
+  return Math.round(m.data[(iy * m.w + ix) * 4] / 4);
+}
+let idsNow = null;
+const nameOf = (g) => (g.combo ? g.label : (LABEL[g.movs[0]] || g.label));
+const toastEl = document.getElementById('toast'); let toastT = 0;
+function toast(g, open, noPatch) {
+  toastEl.innerHTML = '<b>' + nameOf(g) + '</b> <span>' + (noPatch ? '— отсюда не видно, откройте в другой точке' : (open ? 'открыт' : 'закрыт')) + '</span>';
+  toastEl.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove('on'), 1600);
+}
+
+// ---- панорамы, точки, режимы ----
+let cur = PTS[0], mode = 'single', top = 0, fade = null; let floor = '';
+let lon = 0, lat = 0, fov = 70;
+function aimAt(pt) {
+  const d = b2t([pt.look[0] - pt.p[0], pt.look[1] - pt.p[1], pt.look[2] - pt.p[2]]).normalize();
+  lon = Math.atan2(d.z, d.x); lat = Math.asin(d.y);
+}
+async function show(pt, md, keepView) {
+  const tex = await loadPano(pt.id + '_closed' + floor);
+  const next = 1 - top, m = layers[next];
+  m.material.map = tex; m.material.needsUpdate = true; m.material.opacity = 0; m.renderOrder = 2; layers[top].renderOrder = 1;
+  if (!keepView) aimAt(pt);
+  const samePt = pt === cur;
+  fade = { m, from: layers[top], t0: performance.now(), dur: keepView ? 450 : 600 };
+  top = next; cur = pt; mode = md; buildSpots(); ui();
+  idsNow = null; loadIds(pt.id).then(x => { if (cur === pt) idsNow = x; });
+  if (md === 'single') applyOpened(pt.id, !samePt); else hideAllPatches();
+  setTimeout(() => {                                   // фоновая подгрузка
+    metaP.then(() => { if (META && META.parts[pt.id]) Object.keys(META.parts[pt.id]).forEach(gid => loadPatch(pt.id, gid)); });
+    PTS.forEach(q => loadPano(q.id + '_closed' + floor));
+  }, 400);
+}
+const ptsEl = document.getElementById('pts');
+PTS.forEach(pt => {
+  const b = document.createElement('button'); b.className = 'chip'; b.innerHTML = '<span class="dot"></span>' + pt.name;
+  b.onclick = () => { if (pt !== cur) show(pt, mode, false); }; pt.btn = b; ptsEl.appendChild(b);
+});
+const stC = document.getElementById('stClosed'), stO = document.getElementById('stOpen');
+stC.onclick = () => { opened.clear(); hideAllPatches(); ui(); };
+stO.onclick = () => { if (!META) return; opened.clear(); META.groups.forEach(g => { if (!g.combo) opened.add(g.id); }); refresh(cur.id, false); ui(); };
+function ui() {
+  PTS.forEach(p => p.btn.setAttribute('aria-pressed', p === cur));
+  const nAll = META ? META.groups.filter(g => !g.combo).length : -1; stO.setAttribute('aria-pressed', opened.size === nAll); stC.setAttribute('aria-pressed', opened.size === 0);
+}
+
+// кружки-переходы на полу
+const spotsEl = document.getElementById('spots'); let spots = [];
+function buildSpots() {
+  spotsEl.innerHTML = ''; spots = [];
+  PTS.forEach(q => {
+    if (q === cur) return;
+    const d = b2t([q.p[0] - cur.p[0], q.p[1] - cur.p[1], 0.02 - cur.p[2]]).normalize().multiplyScalar(400);
+    const el = document.createElement('button'); el.className = 'spot'; el.setAttribute('aria-label', 'Перейти: ' + q.name);
+    el.innerHTML = '<span>' + q.name + '</span>'; el.onclick = () => show(q, mode, false);
+    spotsEl.appendChild(el); spots.push({ el, v: d });
+  });
+}
+
+// ---- управление: перетаскивание, щипок, нажатие ----
+const hint = document.getElementById('hint');
+let drag = null; const ptrs = new Map(); let pinch0 = 0, fov0 = 70, tap = null;
+const dirAt = (cx, cy) => new THREE.Vector3((cx / innerWidth) * 2 - 1, -(cy / innerHeight) * 2 + 1, 0.5).unproject(camera).normalize();
+canvas.addEventListener('pointerdown', e => {
+  canvas.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+  if (ptrs.size === 1) { drag = { x: e.clientX, y: e.clientY, lon, lat }; tap = { x: e.clientX, y: e.clientY, t: performance.now() }; }
+  if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch0 = Math.hypot(a[0] - b[0], a[1] - b[1]); fov0 = fov; drag = null; tap = null; }
+  hint.style.opacity = 0;
+});
+canvas.addEventListener('pointermove', e => {
+  if (!ptrs.has(e.pointerId)) {                       // наведение мышью: подсветить курсором кликабельное
+    if (e.pointerType === 'mouse' && mode === 'single') { const [u, v] = t2uv(dirAt(e.clientX, e.clientY)); canvas.classList.toggle('hot', pick(u, v) > 0); }
+    return;
+  }
+  ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+  if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; const d = Math.hypot(a[0] - b[0], a[1] - b[1]); fov = THREE.MathUtils.clamp(fov0 * pinch0 / d, 30, 95); return; }
+  if (!drag) return;
+  if (tap && Math.hypot(e.clientX - tap.x, e.clientY - tap.y) > 8) tap = null;
+  const k = (fov / 70) * 0.0045;
+  lon = drag.lon - (e.clientX - drag.x) * k;
+  lat = THREE.MathUtils.clamp(drag.lat + (e.clientY - drag.y) * k, -1.45, 1.45);
+});
+const up = e => {
+  ptrs.delete(e.pointerId);
+  if (ptrs.size === 0) {
+    if (tap && e.type === 'pointerup' && performance.now() - tap.t < 600) onTap(e.clientX, e.clientY);
+    drag = null; tap = null;
+  }
+};
+canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel', up);
+function onTap(cx, cy) {
+  const [u, v] = t2uv(dirAt(cx, cy)); const gid = pick(u, v);
+  if (!gid) return;
+  if (mode === 'all') { toastEl.innerHTML = '<span>Нажмите «Закрыть всё», чтобы открывать по одной</span>'; toastEl.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove('on'), 1800); return; }
+  setGroup(gid, !opened.has(gid)).then(ui); ui();
+}
+canvas.addEventListener('wheel', e => { e.preventDefault(); fov = THREE.MathUtils.clamp(fov * Math.exp(e.deltaY * 0.0012), 30, 95); hint.style.opacity = 0; }, { passive: false });
+addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft') lon -= 0.08; if (e.key === 'ArrowRight') lon += 0.08;
+  if (e.key === 'ArrowUp') lat = Math.min(1.45, lat + 0.06); if (e.key === 'ArrowDown') lat = Math.max(-1.45, lat - 0.06);
+});
+function resize() { const w = innerWidth, h = innerHeight; renderer.setSize(w, h, false); camera.aspect = w / h; if (w < h) fov = Math.max(fov, 80); }
+addEventListener('resize', resize); resize();
+
+const tmp = new THREE.Vector3();
+function frame(now) {
+  if (fade) {
+    const k = Math.min(1, (now - fade.t0) / fade.dur); fade.m.material.opacity = k * k * (3 - 2 * k);
+    if (k >= 1) { fade.from.material.opacity = 0; fade.m.material.opacity = 1; fade = null; }
+  }
+  for (let i = tweens.length - 1; i >= 0; i--) {
+    const t = tweens[i], k = Math.min(1, (now - t.t0) / t.dur), s = k * k * (3 - 2 * k);
+    t.m.opacity = t.from + (t.to - t.from) * s; if (k >= 1) { tweens.splice(i, 1); t.end && t.end(); }
+  }
+  camera.fov = fov; camera.updateProjectionMatrix();
+  camera.lookAt(Math.cos(lat) * Math.cos(lon), Math.sin(lat), Math.cos(lat) * Math.sin(lon));
+  renderer.render(scene, camera);
+  const w = innerWidth, h = innerHeight;
+  for (const s of spots) {
+    tmp.copy(s.v).project(camera);
+    const vis = tmp.z < 1 && Math.abs(tmp.x) < 1.1 && Math.abs(tmp.y) < 1.1;
+    s.el.style.display = vis ? 'block' : 'none';
+    if (vis) { s.el.style.left = ((tmp.x + 1) / 2 * w) + 'px'; s.el.style.top = ((1 - tmp.y) / 2 * h) + 'px'; }
+  }
+  requestAnimationFrame(frame);
+}
+// свернуть описание / скрыть все кнопки (запоминается в этом браузере)
+const store = { get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} } };
+if (store.get('lipki_fold') === '1') document.body.classList.add('folded');
+document.getElementById('fold').onclick = () => { document.body.classList.add('folded'); store.set('lipki_fold', '1'); };
+document.getElementById('unfold').onclick = () => { document.body.classList.remove('folded'); store.set('lipki_fold', '0'); };
+const hideBtn = document.getElementById('hideui');
+hideBtn.onclick = () => { const c = document.body.classList.toggle('clean'); hideBtn.setAttribute('aria-pressed', c); hideBtn.setAttribute('aria-label', c ? 'Показать кнопки' : 'Скрыть кнопки'); };
+window.__pano = { pick, setGroup, opened, get cur() { return cur; }, t2uv, dirAt, aim(x, y, z, f) { aimAt({ p: cur.p, look: [x, y, z] }); if (f) fov = f; } };
+const floorsEl = document.getElementById('floors');
+function buildFloors() {
+  const F = (META && META.floors) || []; floorsEl.innerHTML = ''; floorsEl.style.display = F.length > 1 ? '' : 'none';
+  const lab = document.createElement('span'); lab.textContent = 'Пол'; lab.style.cssText = 'font-size:12.5px;color:var(--muted);padding:7px 6px 7px 10px'; floorsEl.appendChild(lab);
+  F.forEach(([suf, name]) => {
+    const b = document.createElement('button'); b.textContent = name; b.setAttribute('aria-pressed', suf === floor);
+    b.onclick = () => { if (suf === floor) return; floor = suf; store.set('lipki_floor', suf); buildFloors(); show(cur, mode, true); };
+    floorsEl.appendChild(b);
+  });
+}
+metaP.then(() => { const sv = store.get('lipki_floor'); if (sv !== null && META && (META.floors || []).some(f => f[0] === sv)) floor = sv; buildFloors(); })
+  .then(() => show(PTS[0], 'single', false)).then(() => setTimeout(() => hint.style.opacity = 0, 3500));
+requestAnimationFrame(frame);
+</script>
