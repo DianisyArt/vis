@@ -149,10 +149,17 @@ layers.forEach((m, i) => { m.renderOrder = i; scene.add(m); });
 
 const loading = document.getElementById('loading'); let pending = 0;
 const busy = (d) => { pending += d; loading.style.opacity = pending > 0 ? 1 : 0; };
-function loadImg(src) {
+// фоновая догрузка: файлы остальных точек скачиваются заранее в память (blob), чтобы переход был без ожидания
+const PRE = new Map();                            // url → Promise<objectURL|null>
+function prefetch(src) {
+  if (!PRE.has(src)) PRE.set(src, fetch(src).then(r => r.ok ? r.blob() : null).then(b => b ? URL.createObjectURL(b) : null).catch(() => null));
+  return PRE.get(src);
+}
+async function loadImg(src) {
   busy(1);
+  const u = PRE.has(src) ? ((await PRE.get(src)) || src) : src;
   return new Promise((res, rej) => { const img = new Image(); img.decoding = 'async';
-    img.onload = () => { busy(-1); res(img); }; img.onerror = () => { busy(-1); rej(new Error(src)); }; img.src = src; });
+    img.onload = () => { busy(-1); res(img); }; img.onerror = () => { busy(-1); rej(new Error(src)); }; img.src = u; });
 }
 function mkTex(src) {
   const t = new THREE.Texture(src); t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = true;
@@ -337,7 +344,7 @@ let idsNow = null;
 const nameOf = (g) => (g.combo ? g.label : (LABEL[g.movs[0]] || g.label));
 const toastEl = document.getElementById('toast'); let toastT = 0;
 function toast(g, open, noPatch) {
-  toastEl.innerHTML = '<b>' + nameOf(g) + '</b> <span>' + (noPatch ? '— отсюда не видно, откройте в другой точке' : (open ? 'открыт' : 'закрыт')) + '</span>';
+  toastEl.innerHTML = '<b>' + nameOf(g) + '</b> <span>' + (noPatch ? '— отсюда не видно, откройте в другой точке' : ((open ^ !!g.inv) ? 'открыт' : 'закрыт')) + '</span>';
   toastEl.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove('on'), 1600);
 }
 
@@ -352,21 +359,49 @@ function aimAt(pt) {
 const bootEl = document.getElementById('boot'), bootT = document.getElementById('bootT'), bootN = document.getElementById('bootN'), bootI = document.getElementById('bootI');
 const READY = new Set(); let booted = false;
 function setBoot(f) { const p = Math.max(0, Math.min(100, Math.floor(f * 100))); bootN.textContent = p + '%'; bootI.style.width = p + '%'; }
-async function preparePoint(pt) {
+async function preparePoint(pt, silent) {
   const key = pt.id + '_closed' + floor;
   if (READY.has(key)) return;
-  bootT.textContent = booted ? ('Загружаем: ' + pt.name + '…') : 'Загружаем кухню…';
-  bootEl.classList.toggle('soft', booted); bootEl.classList.remove('off'); setBoot(0);
+  if (PREP[key]) {
+    if (silent) { await PREP[key]; return; }
+    showBootSoon(pt); const iv = setInterval(() => setBoot(PREPF[key] ? PREPF[key]() : 0), 100);
+    await PREP[key]; clearInterval(iv); setBoot(1); clearTimeout(bootTimer); setTimeout(() => bootEl.classList.add('off'), 150); return;
+  }
+  let res; PREP[key] = new Promise(r => { res = r; });
+  if (!silent) showBootSoon(pt);
   await metaP;
   const gids = META && META.parts[pt.id] ? Object.keys(META.parts[pt.id]) : [];
   let done = 0; const tot = gids.length + 1;
-  const tick = () => setBoot(0.55 * (PROG[key] || 0) + 0.45 * done / tot);
-  const iv = setInterval(tick, 100);
+  const frac = () => 0.55 * (PROG[key] || 0) + 0.45 * done / tot; PREPF[key] = frac;
+  const iv = setInterval(() => { if (!silent) setBoot(frac()); }, 100);
   const pr = [loadPano(key), loadIds(pt.id).then(() => { done++; })];
   gids.forEach(g => { const p = loadPatch(pt.id, g); if (p) pr.push(p.then(() => { done++; }, () => { done++; })); else done++; });
-  await Promise.allSettled(pr); clearInterval(iv); setBoot(1);
-  READY.add(key); booted = true;
-  setTimeout(() => bootEl.classList.add('off'), 150);
+  await Promise.allSettled(pr); clearInterval(iv);
+  READY.add(key); booted = true; res();
+  if (!silent) { setBoot(1); clearTimeout(bootTimer); setTimeout(() => bootEl.classList.add('off'), 150); }
+}
+const PREP = {}, PREPF = {}; let bootTimer = 0;
+// экран загрузки — сразу при первом входе, при переходах — только если точка ещё не готова через 250 мс
+function showBootSoon(pt) {
+  const on = () => { bootT.textContent = booted ? ('Загружаем: ' + pt.name + '…') : 'Загружаем кухню…';
+    bootEl.classList.toggle('soft', booted); bootEl.classList.remove('off'); };
+  clearTimeout(bootTimer);
+  if (!booted) { setBoot(0); on(); } else bootTimer = setTimeout(on, 250);
+}
+// после первой точки: остальные — по удалённости. На компьютере готовим целиком (текстуры в видеопамяти),
+// на телефоне только скачиваем файлы в память, чтобы не упереться в видеопамять
+let warmStarted = false;
+async function warmAll() {
+  if (warmStarted) return; warmStarted = true;
+  await metaP; if (!META) return;
+  const full = HI || (navigator.deviceMemory || 4) >= 8;
+  const rest = PTS.filter(q => q !== cur).sort((a, b) => Math.hypot(a.p[0] - cur.p[0], a.p[1] - cur.p[1]) - Math.hypot(b.p[0] - cur.p[0], b.p[1] - cur.p[1]));
+  for (const q of rest) {
+    const urls = ['pano/parts/' + q.id + '_ids.png'];
+    Object.values(META.parts[q.id] || {}).forEach(i => { urls.push('pano/parts/' + i.file); if (i.depth) urls.push('pano/parts/' + i.depth); if (i.pick) urls.push('pano/parts/' + i.pick); });
+    for (let k = 0; k < urls.length; k += 6) await Promise.all(urls.slice(k, k + 6).map(prefetch));
+    if (full) await preparePoint(q, true);
+  }
 }
 async function show(pt, md, keepView) {
   await preparePoint(pt);
@@ -382,6 +417,7 @@ async function show(pt, md, keepView) {
   setTimeout(() => {                                   // фоновая подгрузка
     metaP.then(() => { if (META && META.parts[pt.id]) Object.keys(META.parts[pt.id]).forEach(gid => loadPatch(pt.id, gid)); });
     PTS.forEach(q => loadPano(q.id + '_closed' + floor));
+    warmAll();
   }, 400);
 }
 const ptsEl = document.getElementById('pts');
@@ -391,10 +427,10 @@ PTS.forEach(pt => {
 });
 const stC = document.getElementById('stClosed'), stO = document.getElementById('stOpen');
 stC.onclick = () => { opened.clear(); hideAllPatches(); ui(); };
-stO.onclick = () => { if (!META) return; opened.clear(); META.groups.forEach(g => { if (!g.combo) opened.add(g.id); }); refresh(cur.id, false); ui(); };
+stO.onclick = () => { if (!META) return; opened.clear(); META.groups.forEach(g => { if (!g.combo && !g.inv) opened.add(g.id); }); refresh(cur.id, false); ui(); };
 function ui() {
   PTS.forEach(p => p.btn.setAttribute('aria-pressed', p === cur));
-  const nAll = META ? META.groups.filter(g => !g.combo).length : -1; stO.setAttribute('aria-pressed', opened.size === nAll); stC.setAttribute('aria-pressed', opened.size === 0);
+  const nAll = META ? META.groups.filter(g => !g.combo && !g.inv).length : -1; stO.setAttribute('aria-pressed', opened.size === nAll); stC.setAttribute('aria-pressed', opened.size === 0);
 }
 
 // кружки-переходы на полу
