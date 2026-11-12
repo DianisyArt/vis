@@ -214,7 +214,7 @@ void main() {
   vec4 c = texture2D(map, vUv);
   vec2 dd = texture2D(dmap, vUv).rg; float d = (floor(dd.r * 255.0 + 0.5) + dd.g) / 255.0;
   float dn = d > 0.999 ? 1.0 : clamp((d - dr.x) / max(dr.y - dr.x, 1e-4), 0.0, 1.0);
-  const float S = 0.6;
+  const float S = 1.0;   // ширина «фронта» проявления: шире — меньше ряби по глубине
   float w = clamp((op * (1.0 + S) - (1.0 - dn)) / S, 0.0, 1.0);
   float a = c.a * w * w * (3.0 - 2.0 * w); if (a < 0.02) discard;
   gl_FragDepth = min(d, 0.9999); gl_FragColor = vec4(c.rgb, a);
@@ -257,10 +257,11 @@ function loadPatch(pk, gid) {
   });
   patches[key] = rec; return rec.p;
 }
-let order = 10;
-function fadeMesh(mesh, to, dur = (to > 0 ? 950 : 750)) {
+let order = 10; const LAST = {};
+function fadeMesh(mesh, to, dur = (to > 0 ? 950 : 750), delay = 0) {
   mesh.visible = true; if (to > 0) mesh.renderOrder = ++order;
-  tweens.push({ m: mesh.material, from: mesh.material.opacity, to, t0: performance.now(), dur, end: () => { if (to === 0) mesh.visible = false; } });
+  for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === mesh.material) tweens.splice(i, 1);   // одна анимация на заплатку, иначе они спорят
+  tweens.push({ m: mesh.material, from: mesh.material.opacity, to, t0: performance.now() + delay, dur, end: () => { if (to === 0) mesh.visible = false; } });
 }
 const tweens = [];
 // мешающие друг другу элементы: из проверки геометрии в Blender (parts.json → conflicts) + известные вручную
@@ -297,14 +298,29 @@ function refresh(pk, instant) {
   Object.entries(patches).forEach(([k, r]) => { if (r.mesh && !k.startsWith(pk + '_')) { r.mesh.visible = false; r.mesh.material.opacity = 0; } });
   if (mode !== 'single' || !META) return;
   const want = shownSet(pk);
+  // что было видно открытым до этого нажатия (сама группа или в составе общей заплатки)
+  const before = LAST[pk] || new Set(), wasOpen = new Set();
+  before.forEach(id => { wasOpen.add(id); ((GBY[id] || {}).combo || []).forEach(m => wasOpen.add(m)); });
+  const willOpen = new Set(); want.forEach(id => { willOpen.add(id); ((GBY[id] || {}).combo || []).forEach(m => willOpen.add(m)); });
+  LAST[pk] = new Set(want);
   opened.forEach(gid => loadPatch(pk, gid));                 // маски створок нужны для попадания пальцем
   Object.keys(META.parts[pk] || {}).forEach(async gidS => {
     const gid = +gidS, rec0 = patches[pk + '_' + gid];
-    if (!want.has(gid)) { if (rec0 && rec0.mesh && rec0.mesh.visible && rec0.mesh.material.opacity > 0 && !rec0.fading0) { fadeMesh(rec0.mesh, 0); } return; }
+    if (!want.has(gid)) {
+      if (rec0 && rec0.mesh && rec0.mesh.visible && rec0.mesh.material.opacity > 0) {
+        // уходит, но остаётся открытым в составе новой общей заплатки — гасим только после того, как та проявится (иначе сосед «мигает»)
+        const stays = (GBY[gid].combo || [gid]).every(m => willOpen.has(m));
+        fadeMesh(rec0.mesh, 0, stays ? 200 : 750, stays ? 1000 : 0);
+      }
+      return;
+    }
     const rec = await loadPatch(pk, gid);
     if (!rec || cur.id !== pk || mode !== 'single' || !shownSet(pk).has(gid)) return;
     if (rec.mesh.visible && rec.mesh.material.opacity >= 0.99) return;
-    if (instant) { rec.mesh.visible = true; rec.mesh.material.opacity = 1; rec.mesh.renderOrder = ++order; } else fadeMesh(rec.mesh, 1);
+    // уже был открыт (был внутри общей заплатки) — показываем сразу, без проявления
+    const already = (GBY[gid].combo || [gid]).every(m => wasOpen.has(m));
+    if (instant || already) { for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === rec.mesh.material) tweens.splice(i, 1);
+      rec.mesh.visible = true; rec.mesh.material.opacity = 1; rec.mesh.renderOrder = ++order; } else fadeMesh(rec.mesh, 1);
   });
 }
 function applyOpened(pk, instant) { refresh(pk, instant); }
@@ -498,7 +514,7 @@ function frame(now) {
     if (k >= 1) { fade.from.material.opacity = 0; fade.m.material.opacity = 1; fade = null; }
   }
   for (let i = tweens.length - 1; i >= 0; i--) {
-    const t = tweens[i], k = Math.min(1, (now - t.t0) / t.dur), s = k * k * (3 - 2 * k);
+    const t = tweens[i], k = Math.max(0, Math.min(1, (now - t.t0) / t.dur)), s = k * k * (3 - 2 * k);
     t.m.opacity = t.from + (t.to - t.from) * s; if (k >= 1) { tweens.splice(i, 1); t.end && t.end(); }
   }
   camera.fov = fov; camera.updateProjectionMatrix();
