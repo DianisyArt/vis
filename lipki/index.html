@@ -209,7 +209,7 @@ function loadIds(pk) {
 const PATCH_VS = 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }';
 // плавное открывание без лишних кадров: заплатка проявляется по глубине — сначала дальнее (нутро шкафа),
 // потом ближнее (открытая дверца/ящик «выходит» на зрителя); при закрытии — в обратном порядке
-const PATCH_FS = `uniform sampler2D map; uniform sampler2D dmap; uniform float op; uniform vec2 dr; varying vec2 vUv;
+const PATCH_FS = `uniform sampler2D map; uniform sampler2D dmap; uniform float op; uniform vec2 dr; uniform float zb; varying vec2 vUv;
 void main() {
   vec4 c = texture2D(map, vUv);
   vec2 dd = texture2D(dmap, vUv).rg; float d = (floor(dd.r * 255.0 + 0.5) + dd.g) / 255.0;
@@ -217,7 +217,7 @@ void main() {
   const float S = 1.0;   // ширина «фронта» проявления: шире — меньше ряби по глубине
   float w = clamp((op * (1.0 + S) - (1.0 - dn)) / S, 0.0, 1.0);
   float a = c.a * w * w * (3.0 - 2.0 * w); if (a < 0.02) discard;
-  gl_FragDepth = min(d, 0.9999); gl_FragColor = vec4(c.rgb, a);
+  gl_FragDepth = (c.a > 0.9 ? min(d, 0.9999) : 0.99995) - zb; gl_FragColor = vec4(c.rgb, a);   // zb: при равной глубине (общая полка, кромка) выигрывает последняя открытая — без «пунктира» от z-fighting
 }`;
 function rawTex(src, nearest) {
   const t = new THREE.Texture(src); t.colorSpace = THREE.NoColorSpace;
@@ -240,7 +240,7 @@ function loadPatch(pk, gid) {
     const g = new THREE.SphereGeometry(490, Math.max(4, Math.ceil((X1 - X0) / W * 160)), Math.max(4, Math.ceil((Y1 - Y0) / H * 80)),
       X0 / W * 2 * Math.PI, (X1 - X0) / W * 2 * Math.PI, Y0 / H * Math.PI, (Y1 - Y0) / H * Math.PI);
     g.scale(-1, 1, 1);
-    const u = { map: { value: rawTex(img) }, dmap: { value: dimg ? rawTex(dimg, true) : null }, op: { value: 0 }, dr: { value: new THREE.Vector2(0, 1) } };
+    const u = { map: { value: rawTex(img) }, dmap: { value: dimg ? rawTex(dimg, true) : null }, op: { value: 0 }, dr: { value: new THREE.Vector2(0, 1) }, zb: { value: 0 } };
     const mat = dimg ? new THREE.ShaderMaterial({ uniforms: u, vertexShader: PATCH_VS, fragmentShader: PATCH_FS, transparent: true, depthTest: true, depthWrite: true })
                      : Object.assign(mkMat(), { map: mkTex(img) });
     if (dimg) Object.defineProperty(mat, 'opacity', { get: () => u.op.value, set: (v) => { u.op.value = v; }, configurable: true });
@@ -258,8 +258,9 @@ function loadPatch(pk, gid) {
   patches[key] = rec; return rec.p;
 }
 let order = 10; const LAST = {};
+function setTop(mesh) { mesh.renderOrder = ++order; const u = mesh.material.uniforms; if (u && u.zb) u.zb.value = Math.min(order, 20000) * 2e-7; }
 function fadeMesh(mesh, to, dur = (to > 0 ? 950 : 750), delay = 0) {
-  mesh.visible = true; if (to > 0) mesh.renderOrder = ++order;
+  mesh.visible = true; if (to > 0) setTop(mesh);
   for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === mesh.material) tweens.splice(i, 1);   // одна анимация на заплатку, иначе они спорят
   tweens.push({ m: mesh.material, from: mesh.material.opacity, to, t0: performance.now() + delay, dur, end: () => { if (to === 0) mesh.visible = false; } });
 }
@@ -281,6 +282,10 @@ async function setGroup(gid, open, quiet) {
     opened.delete(gid);
     META.groups.forEach(x => { if (reqIds(x).includes(gid)) opened.delete(x.id); });       // закрыли дверь — её ящики тоже
   }
+  // внутренний ящик без открытого фасада не показываем: иначе после закрытия фасада (в т.ч. соседом-помехой) остаётся «призрак»
+  let changed = true;
+  while (changed) { changed = false;
+    for (const id of [...opened]) { const x = GBY[id]; if (x && !x.combo && reqIds(x).some(r => !opened.has(r))) { opened.delete(id); changed = true; } } }
   if (!quiet) toast(g, open);
   if (open && !quiet && !(META.parts[cur.id] || {})[gid]) toast(g, open, true);
   refresh(cur.id, false);
@@ -320,7 +325,7 @@ function refresh(pk, instant) {
     // уже был открыт (был внутри общей заплатки) — показываем сразу, без проявления
     const already = (GBY[gid].combo || [gid]).every(m => wasOpen.has(m));
     if (instant || already) { for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === rec.mesh.material) tweens.splice(i, 1);
-      rec.mesh.visible = true; rec.mesh.material.opacity = 1; rec.mesh.renderOrder = ++order; } else fadeMesh(rec.mesh, 1);
+      rec.mesh.visible = true; rec.mesh.material.opacity = 1; setTop(rec.mesh); } else fadeMesh(rec.mesh, 1);
   });
 }
 function applyOpened(pk, instant) { refresh(pk, instant); }
