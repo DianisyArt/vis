@@ -43,6 +43,12 @@ canvas#c:active { cursor: grabbing; }
 .btn:focus-visible, .chip:focus-visible, .seg button:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
 #hint { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 9px 14px;
   font-size: 13.5px; color: var(--ink); pointer-events: none; transition: opacity .4s; white-space: nowrap; }
+#boot { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; background: rgba(18,16,14,.94); transition: opacity .45s, background .3s; }
+#boot.soft { background: rgba(18,16,14,.55); }
+#boot.off { opacity: 0; pointer-events: none; }
+#boot .bx { min-width: 240px; max-width: 80vw; padding: 18px 22px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); text-align: center; }
+#boot .t { font-size: 14px; margin-bottom: 10px; } #boot .n { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; margin-bottom: 10px; }
+#boot .bar { height: 4px; border-radius: 4px; background: var(--line); overflow: hidden; } #boot .bar i { display: block; height: 100%; width: 0; background: currentColor; transition: width .15s; }
 #loading { position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); bottom: calc(14px + env(safe-area-inset-bottom, 0px)); font-size: 12px; color: var(--muted);
   background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 6px 11px; pointer-events: none; transition: opacity .3s; }
 .spot { position: fixed; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%; border: 0; padding: 0; cursor: pointer; background: transparent; display: none; }
@@ -90,6 +96,7 @@ body.clean .top .card, body.clean #unfold, body.clean .top .tr > a, body.clean .
   <div class="row" id="pts" role="group" aria-label="Точки обзора"></div>
 </div>
 <div id="loading">Загрузка…</div>
+<div id="boot" role="progressbar" aria-live="polite"><div class="bx"><div class="t" id="bootT">Загружаем кухню…</div><div class="n" id="bootN">0%</div><div class="bar"><i id="bootI"></i></div></div></div>
 
 <script type="importmap">{ "imports": { "three": "./lib/three.module.js" } }</script>
 <script type="module">
@@ -152,8 +159,24 @@ function mkTex(src) {
   t.minFilter = THREE.LinearMipmapLinearFilter; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); t.needsUpdate = true; return t;
 }
 const cache = new Map();
+const PROG = {};                                 // доля загрузки больших панорам (по байтам)
+function fetchImg(src, key) {
+  busy(1); PROG[key] = 0;
+  return fetch(src).then(async r => {
+    if (!r.ok) throw new Error(src);
+    const total = +r.headers.get('content-length') || 0;
+    let blob;
+    if (r.body && total) {
+      const rd = r.body.getReader(), parts = []; let got = 0;
+      for (;;) { const { done, value } = await rd.read(); if (done) break; parts.push(value); got += value.length; PROG[key] = Math.min(0.99, got / total); }
+      blob = new Blob(parts);
+    } else blob = await r.blob();
+    const img = new Image(); img.decoding = 'async'; img.src = URL.createObjectURL(blob); await img.decode();
+    PROG[key] = 1; busy(-1); return img;
+  }).catch(e => { busy(-1); PROG[key] = 1; return loadImg(src); });
+}
 function loadPano(key) {
-  if (!cache.has(key)) cache.set(key, loadImg('pano/' + key + (HI ? '' : '_4k') + '.jpg').then(img => {
+  if (!cache.has(key)) cache.set(key, fetchImg('pano/' + key + (HI ? '' : '_4k') + '.jpg', key).then(img => {
     let src = img;
     if (img.width > MAXT) { const cv = document.createElement('canvas'); cv.width = MAXT; cv.height = MAXT / 2; cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height); src = cv; }
     return mkTex(src);
@@ -308,7 +331,7 @@ function pick(u, v) {
   if (best) return best;
   const m = idsNow; if (!m) return 0;
   const ix = Math.min(m.w - 1, Math.floor(u * m.w)), iy = Math.min(m.h - 1, Math.floor(v * m.h));
-  return Math.round(m.data[(iy * m.w + ix) * 4] / 4);
+  return Math.round(m.data[(iy * m.w + ix) * 4] / ((META && META.idk) || 4));
 }
 let idsNow = null;
 const nameOf = (g) => (g.combo ? g.label : (LABEL[g.movs[0]] || g.label));
@@ -325,7 +348,28 @@ function aimAt(pt) {
   const d = b2t([pt.look[0] - pt.p[0], pt.look[1] - pt.p[1], pt.look[2] - pt.p[2]]).normalize();
   lon = Math.atan2(d.z, d.x); lat = Math.asin(d.y);
 }
+// ---- загрузка точки с процентами: панорама + карта фасадов + все заплатки, только потом показ ----
+const bootEl = document.getElementById('boot'), bootT = document.getElementById('bootT'), bootN = document.getElementById('bootN'), bootI = document.getElementById('bootI');
+const READY = new Set(); let booted = false;
+function setBoot(f) { const p = Math.max(0, Math.min(100, Math.floor(f * 100))); bootN.textContent = p + '%'; bootI.style.width = p + '%'; }
+async function preparePoint(pt) {
+  const key = pt.id + '_closed' + floor;
+  if (READY.has(key)) return;
+  bootT.textContent = booted ? ('Загружаем: ' + pt.name + '…') : 'Загружаем кухню…';
+  bootEl.classList.toggle('soft', booted); bootEl.classList.remove('off'); setBoot(0);
+  await metaP;
+  const gids = META && META.parts[pt.id] ? Object.keys(META.parts[pt.id]) : [];
+  let done = 0; const tot = gids.length + 1;
+  const tick = () => setBoot(0.55 * (PROG[key] || 0) + 0.45 * done / tot);
+  const iv = setInterval(tick, 100);
+  const pr = [loadPano(key), loadIds(pt.id).then(() => { done++; })];
+  gids.forEach(g => { const p = loadPatch(pt.id, g); if (p) pr.push(p.then(() => { done++; }, () => { done++; })); else done++; });
+  await Promise.allSettled(pr); clearInterval(iv); setBoot(1);
+  READY.add(key); booted = true;
+  setTimeout(() => bootEl.classList.add('off'), 150);
+}
 async function show(pt, md, keepView) {
+  await preparePoint(pt);
   const tex = await loadPano(pt.id + '_closed' + floor);
   const next = 1 - top, m = layers[next];
   m.material.map = tex; m.material.needsUpdate = true; m.material.opacity = 0; m.renderOrder = 2; layers[top].renderOrder = 1;
