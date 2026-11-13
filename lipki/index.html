@@ -245,6 +245,7 @@ function loadPatch(pk, gid) {
                      : Object.assign(mkMat(), { map: mkTex(img) });
     if (dimg) Object.defineProperty(mat, 'opacity', { get: () => u.op.value, set: (v) => { u.op.value = v; }, configurable: true });
     rec.mesh = new THREE.Mesh(g, mat); rec.mesh.renderOrder = 10; rec.mesh.visible = false; scene.add(rec.mesh);
+    rec.mesh.userData.inv = !!(GBY[gid] && GBY[gid].inv);   // «внутренний закрыт»: ящик уезжает ВГЛУБЬ — заплатка должна перекрыть выдвинутый ящик из заплатки фасада, хотя он ближе по глубине
     rec.alpha = readPixels(img, 0.25);                  // маска — для попадания пальцем по открытой дверце
     if (dimg) {
       rec.depth = readPixels(dimg, 0.5);
@@ -258,7 +259,7 @@ function loadPatch(pk, gid) {
   patches[key] = rec; return rec.p;
 }
 let order = 10; const LAST = {};
-function setTop(mesh) { mesh.renderOrder = ++order; const u = mesh.material.uniforms; if (u && u.zb) u.zb.value = Math.min(order, 20000) * 2e-7; }
+function setTop(mesh) { mesh.renderOrder = ++order; const u = mesh.material.uniforms; if (u && u.zb) u.zb.value = Math.min(order, 20000) * 2e-7 + (mesh.userData.inv ? 0.5 : 0); }
 function fadeMesh(mesh, to, dur = (to > 0 ? 950 : 750), delay = 0) {
   mesh.visible = true; if (to > 0) setTop(mesh);
   for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === mesh.material) tweens.splice(i, 1);   // одна анимация на заплатку, иначе они спорят
