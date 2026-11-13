@@ -50,7 +50,6 @@ async def main():
                 await pg.evaluate("([g,o]) => window.__pano.setGroup(g, o, true)", [gid, openit])
                 await pg.wait_for_timeout(2600)
                 r = await pg.evaluate(CHECK)
-                if step < 3: print("  ", step, gid, openit, "видно", r["vis"], "открыто", r["opened"], flush=True)
                 for kind, g in r['out']:
                     res.append({'pt': pk, 'step': step, 'act': ('открыть ' if openit else 'закрыть ') + '+'.join(G[gid]['movs']),
                                 'kind': kind, 'gid': g, 'name': '+'.join(G.get(g, {}).get('movs', [])), 'opened': r['opened']})
