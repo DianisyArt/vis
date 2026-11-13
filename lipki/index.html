@@ -541,7 +541,7 @@ document.getElementById('fold').onclick = () => { document.body.classList.add('f
 document.getElementById('unfold').onclick = () => { document.body.classList.remove('folded'); store.set('lipki_fold', '0'); };
 const hideBtn = document.getElementById('hideui');
 hideBtn.onclick = () => { const c = document.body.classList.toggle('clean'); hideBtn.setAttribute('aria-pressed', c); hideBtn.setAttribute('aria-label', c ? 'Показать кнопки' : 'Скрыть кнопки'); };
-window.__pano = { pick, setGroup, opened, patches, get cur() { return cur; }, t2uv, dirAt, aim(x, y, z, f) { aimAt({ p: cur.p, look: [x, y, z] }); if (f) fov = f; } };
+window.__pano = { pick, setGroup, opened, patches, shownSet, get META() { return META; }, get cur() { return cur; }, t2uv, dirAt, aim(x, y, z, f) { aimAt({ p: cur.p, look: [x, y, z] }); if (f) fov = f; } };
 const floorsEl = document.getElementById('floors');
 function buildFloors() {
   const F = (META && META.floors) || []; floorsEl.innerHTML = ''; floorsEl.style.display = F.length > 1 ? '' : 'none';
