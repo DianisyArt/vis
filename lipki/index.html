@@ -267,6 +267,65 @@ function fadeMesh(mesh, to, dur = (to > 0 ? 950 : 750), delay = 0) {
   tweens.push({ m: mesh.material, from: mesh.material.opacity, to, t0: performance.now() + delay, dur, end: () => { if (to === 0) mesh.visible = false; } });
 }
 const tweens = [];
+
+// ---- анимация открывания (14.11.2026): 29 кадров 2K по каждой дверце/ящику, атлас 5 столбцов (pano/anim) ----
+// Кадры отрендерены в «чистой» сцене (открыта только эта группа и то, без чего она не открывается), поэтому играем их,
+// только если рядом нет других открытых фасадов; иначе — обычное проявление заплатки.
+let ANIM = null; const AREC = {};
+const animP = fetch('pano/anim/anim.json').then(r => r.ok ? r.json() : null).then(j => { ANIM = j; return j; }).catch(() => null);
+function loadAnim(pk, gid) {
+  const key = pk + '_' + gid; if (AREC[key]) return AREC[key].p;
+  const a = ANIM && ANIM[pk] && ANIM[pk][gid]; if (!a) return null;
+  const rec = AREC[key] = { a, ready: false };
+  rec.p = loadImg('pano/anim/' + a.file).then(img => {
+    const [cw, ch] = a.cell, W = 2048, H = 1024, [X0, Y0, X1, Y1] = a.px;
+    rec.tex = [];
+    for (let k = 0; k < a.n; k++) {
+      const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
+      cv.getContext('2d').drawImage(img, (k % a.cols) * cw, Math.floor(k / a.cols) * ch, cw, ch, 0, 0, cw, ch);
+      const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = false; t.minFilter = THREE.LinearFilter;
+      renderer.initTexture(t); rec.tex.push(t);
+    }
+    const g = new THREE.SphereGeometry(480, Math.max(4, Math.ceil((X1 - X0) / W * 160)), Math.max(4, Math.ceil((Y1 - Y0) / H * 80)),
+      X0 / W * 2 * Math.PI, (X1 - X0) / W * 2 * Math.PI, Y0 / H * Math.PI, (Y1 - Y0) / H * Math.PI);
+    g.scale(-1, 1, 1);
+    rec.mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ map: rec.tex[0], transparent: true, depthTest: false, depthWrite: false }));
+    rec.mesh.renderOrder = 1e7; rec.mesh.visible = false; scene.add(rec.mesh); rec.ready = true; return rec;
+  }).catch(() => null);
+  return rec.p;
+}
+// кадры текущей точки — в фоне, по одному файлу, чтобы не мешать заплаткам
+let animQ = 0;
+async function animPrefetch(pk) {
+  const my = ++animQ; await animP; if (!ANIM || !ANIM[pk]) return;
+  for (const gid of Object.keys(ANIM[pk])) { if (my !== animQ || cur.id !== pk) return; await loadAnim(pk, gid); }
+}
+function rectsHit(a, b) { const w = Math.min(a[2], b[2]) - Math.max(a[0], b[0]), h = Math.min(a[3], b[3]) - Math.max(a[1], b[1]); return w > 0 && h > 0 ? w * h : 0; }
+function animOk(pk, gid, keep, others) {
+  if (floor || mode !== 'single' || !ANIM || !ANIM[pk] || !ANIM[pk][gid]) return false;
+  const a = ANIM[pk][gid].px.map(v => v * 4), area = (a[2] - a[0]) * (a[3] - a[1]), P = META.parts[pk] || {};
+  for (const o of others) { if (keep.has(o) || !P[o]) continue; if (rectsHit(a, P[o].px) > 0.08 * area) return false; }
+  return true;
+}
+const anims = [];
+function playAnim(rec, fwd, done) {
+  for (let i = anims.length - 1; i >= 0; i--) if (anims[i].rec === rec) anims.splice(i, 1);
+  const n = rec.tex.length; rec.mesh.material.map = rec.tex[fwd ? 0 : n - 1]; rec.mesh.material.opacity = 1; rec.mesh.visible = true;
+  anims.push({ rec, fwd, t0: performance.now(), dur: 1050, done });
+}
+function stepAnims(now) {
+  for (let i = anims.length - 1; i >= 0; i--) {
+    const A = anims[i], k = Math.min(1, (now - A.t0) / A.dur), s = k * k * (3 - 2 * k), n = A.rec.tex.length;
+    const f = Math.round((A.fwd ? s : 1 - s) * (n - 1));
+    if (A.rec.mesh.material.map !== A.rec.tex[f]) A.rec.mesh.material.map = A.rec.tex[f];
+    if (k >= 1) { anims.splice(i, 1); A.done && A.done(); }
+  }
+}
+function animOut(rec, ms) {      // кадр уходит, когда под ним уже нужная картинка
+  const m = rec.mesh.material;
+  for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === m) tweens.splice(i, 1);
+  tweens.push({ m, from: 1, to: 0, t0: performance.now(), dur: ms, end: () => { rec.mesh.visible = false; } });
+}
 // мешающие друг другу элементы: из проверки геометрии в Blender (parts.json → conflicts) + известные вручную
 function conflictsOf(g) {
   const s = new Set((META.conflicts && META.conflicts[g.id]) || []);
@@ -275,6 +334,7 @@ function conflictsOf(g) {
 }
 async function setGroup(gid, open, quiet) {
   const g = GBY[gid]; if (!g) return;
+  const before = new Set(opened);
   const reqIds = (x) => (x.req || []).map(nm => (META.groups.find(y => !y.combo && y.movs[0] === nm) || {}).id).filter(Boolean);
   if (open) {
     conflictsOf(g).forEach(oid => { if (opened.has(oid)) { opened.delete(oid); } });   // что мешает — закрываем
@@ -290,16 +350,47 @@ async function setGroup(gid, open, quiet) {
     for (const id of [...opened]) { const x = GBY[id]; if (x && !x.combo && reqIds(x).some(r => !opened.has(r))) { opened.delete(id); changed = true; } } }
   if (!quiet) toast(g, open);
   if (open && !quiet && !(META.parts[cur.id] || {})[gid]) toast(g, open, true);
+  const pk = cur.id, keep = new Set([gid, ...reqIds(g)]);
+  if (!quiet && !g.combo && animOk(pk, gid, keep, new Set([...before, ...opened]))) {
+    const p = loadAnim(pk, gid), ar = AREC[pk + '_' + gid];
+    const rec = ar && ar.ready ? ar : await Promise.race([p, new Promise(r => setTimeout(() => r(null), 350))]);
+    if (rec && rec.ready && cur.id === pk && opened.has(gid) === open) {
+      if (open) {
+        playAnim(rec, true, () => { if (cur.id !== pk) { rec.mesh.visible = false; return; } refresh(pk, true); animOut(rec, 160); });
+      } else {
+        playAnim(rec, false, () => animOut(rec, 140));
+        refresh(pk, true);
+        Object.entries(patches).forEach(([k, r]) => {           // своя заплатка (одна или в составе общей) — убрать сразу, иначе видна «призраком» по краю кадра
+          if (!k.startsWith(pk + '_') || !r.mesh) return; const id = +k.slice(pk.length + 1);
+          if ((GBY[id].combo || [id]).includes(gid) && !LAST[pk].has(id)) {
+            for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === r.mesh.material) tweens.splice(i, 1);
+            r.mesh.visible = false; r.mesh.material.opacity = 0; }
+        });
+      }
+      return;
+    }
+  }
   refresh(cur.id, false);
 }
 // что показывать в точке: открытые группы; у двустворчатых (сушка) при обеих открытых створках — общая заплатка,
 // иначе между створками осталась бы щель из закрытого кадра
 function shownSet(pk) {
-  const s = new Set(opened), P = META.parts[pk] || {};
-  META.groups.filter(g => g.combo).sort((a, b) => b.combo.length - a.combo.length).forEach(c => {
-    if (c.combo.every(m => s.has(m)) && P[c.id]) { c.combo.forEach(m => s.delete(m)); s.add(c.id); }
+  // 14.11.2026: каждая пара соседних открытых фасадов должна быть внутри ОДНОЙ показанной заплатки (комбо) — иначе в одиночной заплатке
+  // виден торец закрытой соседки (серая полоска на Gola). Комбо могут перекрываться (13+15 и 15+17): там, где заплатка показывает
+  // чужой закрытый фасад, глубина «далеко» (cut_l6), и выигрывает та, где он открыт.
+  const S = new Set(opened), P = META.parts[pk] || {}, out = new Set();
+  const combos = META.groups.filter(g => g.combo && P[g.id] && g.combo.every(m => S.has(m))).sort((a, b) => b.combo.length - a.combo.length);
+  const pairKey = (a, b) => a < b ? a + ':' + b : b + ':' + a;
+  const need = new Set();   // соседство берём из всех комбо проекта: пара, для которой есть общая заплатка, считается соседней
+  META.groups.forEach(g => { if (!g.combo) return; for (let i = 0; i < g.combo.length; i++) for (let j = i + 1; j < g.combo.length; j++) if (S.has(g.combo[i]) && S.has(g.combo[j])) need.add(pairKey(g.combo[i], g.combo[j])); });
+  const covered = new Set(), members = new Set();
+  combos.forEach(c => {
+    const pc = []; for (let i = 0; i < c.combo.length; i++) for (let j = i + 1; j < c.combo.length; j++) { const k = pairKey(c.combo[i], c.combo[j]); if (need.has(k) && !covered.has(k)) pc.push(k); }
+    if (!pc.length) return;
+    out.add(c.id); pc.forEach(k => covered.add(k)); c.combo.forEach(m => members.add(m));
   });
-  return s;
+  S.forEach(m => { if (!members.has(m)) out.add(m); });
+  return out;
 }
 function refresh(pk, instant) {
   Object.entries(patches).forEach(([k, r]) => { if (r.mesh && !k.startsWith(pk + '_')) { r.mesh.visible = false; r.mesh.material.opacity = 0; } });
@@ -442,6 +533,7 @@ async function show(pt, md, keepView) {
     PTS.forEach(q => loadPano(q.id + '_closed' + floor));
     warmAll();
   }, 400);
+  setTimeout(() => { if (cur === pt) animPrefetch(pt.id); }, 2500);
 }
 const ptsEl = document.getElementById('pts');
 PTS.forEach(pt => {
@@ -520,6 +612,7 @@ function frame(now) {
     const k = Math.min(1, (now - fade.t0) / fade.dur); fade.m.material.opacity = k * k * (3 - 2 * k);
     if (k >= 1) { fade.from.material.opacity = 0; fade.m.material.opacity = 1; fade = null; }
   }
+  stepAnims(now);
   for (let i = tweens.length - 1; i >= 0; i--) {
     const t = tweens[i], k = Math.max(0, Math.min(1, (now - t.t0) / t.dur)), s = k * k * (3 - 2 * k);
     t.m.opacity = t.from + (t.to - t.from) * s; if (k >= 1) { tweens.splice(i, 1); t.end && t.end(); }
@@ -543,7 +636,7 @@ document.getElementById('fold').onclick = () => { document.body.classList.add('f
 document.getElementById('unfold').onclick = () => { document.body.classList.remove('folded'); store.set('lipki_fold', '0'); };
 const hideBtn = document.getElementById('hideui');
 hideBtn.onclick = () => { const c = document.body.classList.toggle('clean'); hideBtn.setAttribute('aria-pressed', c); hideBtn.setAttribute('aria-label', c ? 'Показать кнопки' : 'Скрыть кнопки'); };
-window.__pano = { pick, setGroup, opened, patches, shownSet, get META() { return META; }, get cur() { return cur; }, t2uv, dirAt, aim(x, y, z, f) { aimAt({ p: cur.p, look: [x, y, z] }); if (f) fov = f; } };
+window.__pano = { pick, setGroup, opened, patches, shownSet, AREC, get ANIM() { return ANIM; }, get META() { return META; }, get cur() { return cur; }, t2uv, dirAt, aim(x, y, z, f) { aimAt({ p: cur.p, look: [x, y, z] }); if (f) fov = f; } };
 const floorsEl = document.getElementById('floors');
 function buildFloors() {
   const F = (META && META.floors) || []; floorsEl.innerHTML = ''; floorsEl.style.display = F.length > 1 ? '' : 'none';
