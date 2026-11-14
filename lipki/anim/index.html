@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Липки — сравнение плавного открывания</title>
+<style>
+  :root { --bg:#1d1b19; --fg:#f2ede6; --mut:#b9b0a4; --acc:#c79a5b; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; overflow:hidden; }
+  header { padding:10px 16px 6px; display:flex; flex-wrap:wrap; gap:8px 18px; align-items:center; }
+  h1 { font-size:16px; margin:0; font-weight:650; }
+  .btns { display:flex; gap:8px; flex-wrap:wrap; }
+  button { background:#2c2925; color:var(--fg); border:1px solid #4a443d; border-radius:999px; padding:7px 14px; font:inherit; cursor:pointer; }
+  button.on { background:var(--acc); border-color:var(--acc); color:#1d1b19; font-weight:600; }
+  .hint { color:var(--mut); font-size:12.5px; }
+  main { display:grid; grid-template-columns:1fr 1fr; gap:6px; height:calc(100% - 86px); padding:0 6px 6px; }
+  @media (max-width:800px) { main { grid-template-columns:1fr; grid-template-rows:1fr 1fr; } }
+  .pane { position:relative; border-radius:10px; overflow:hidden; background:#000; }
+  .pane canvas { width:100%; height:100%; display:block; touch-action:none; cursor:grab; }
+  .tag { position:absolute; left:10px; top:10px; background:rgba(20,18,16,.78); padding:7px 11px; border-radius:9px; font-size:12.5px; pointer-events:none; }
+  .tag b { font-size:13.5px; }
+  #load { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:var(--bg); z-index:5; color:var(--mut); }
+</style>
+</head>
+<body>
+<div id="load">Загрузка…</div>
+<header>
+  <h1>Плавное открывание — два варианта</h1>
+  <div class="btns">
+    <button data-k="hf">AVENTOS HF</button>
+    <button data-k="drawer">Ящик</button>
+    <button data-k="door">Дверка</button>
+    <button id="slow">Замедлить ×3</button>
+    <button id="cut">Без растворения</button>
+  </div>
+  <div class="hint">Повторное нажатие закрывает. «Без растворения» — кадры сменяются без наложения (видны шаги, но нет полупрозрачности). Тяните мышью или пальцем — обе панорамы поворачиваются вместе, колесо — приближение.</div>
+</header>
+<main>
+  <div class="pane"><canvas id="cA"></canvas><div class="tag" id="tA"></div></div>
+  <div class="pane"><canvas id="cB"></canvas><div class="tag" id="tB"></div></div>
+</main>
+<script type="importmap">{ "imports": { "three": "../lib/three.module.js" } }</script>
+<script type="module">
+import * as THREE from 'three';
+const DEMO = await (await fetch('img/demo.json')).json();
+const loadImg = (s) => new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = s; });
+const mkTex = (img) => { const t = new THREE.Texture(img); t.colorSpace = THREE.SRGBColorSpace; t.needsUpdate = true; return t; };
+// мягкий край кадра-заплатки, чтобы не было видно стыка с базовой панорамой
+const feather = (() => { const c = document.createElement('canvas'); c.width = c.height = 256; const x = c.getContext('2d'); const d = x.createImageData(256, 256);
+  for (let j = 0; j < 256; j++) for (let i = 0; i < 256; i++) { const e = Math.min(i, 255 - i, j, 255 - j) / 255 / 0.06; const a = Math.max(0, Math.min(1, e)); const v = Math.round(255 * a * a * (3 - 2 * a)); const k = (j * 256 + i) * 4; d.data[k] = d.data[k + 1] = d.data[k + 2] = v; d.data[k + 3] = 255; }
+  x.putImageData(d, 0, 0); const t = new THREE.CanvasTexture(c); return t; })();
+const baseImg = await loadImg('img/base_4k.jpg');
+// последовательности: кадры от 0 (закрыто — база) до 1 (открыто). У эконома конец — тот же 4K-кадр, что и у топа (в реальном сайте открытое состояние всё равно полноразмерное)
+const V = DEMO.var;
+const SEQ = {
+  A: { name: 'Топ', note: (k) => `${V.top.fr.length - 1} промежуточных + конечный, ${V.top.res[0]}×${V.top.res[1]}, ${DEMO.spp ? '' : '128 сэмплов'}`, fr: V.top.fr, files: (k) => V.top.frames[k] },
+  B: { name: 'Эконом', note: (k) => `${V.eco.fr.length - 1} промежуточных (${V.eco.res[0]}×${V.eco.res[1]}, 64 сэмпла) + конечный 4K`, fr: V.eco.fr, files: (k) => V.eco.frames[k].slice(0, -1).concat([V.top.frames[k][V.top.frames[k].length - 1]]) },
+};
+let lon = 0, lat = 0, fov = 62;
+{ const r = Object.values(DEMO.rects); const u = (Math.min(...r.map(x => x[0])) + Math.max(...r.map(x => x[1]))) / 2; const v = (Math.min(...r.map(x => x[2])) + Math.max(...r.map(x => x[3]))) / 2;
+  lon = u * 2 * Math.PI; lat = Math.PI / 2 - v * Math.PI; }
+function makeView(canvas, key) {
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true }); renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  const scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera(fov, 1, 1, 2000);
+  const g = new THREE.SphereGeometry(500, 128, 64); g.scale(-1, 1, 1);
+  scene.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ map: mkTex(baseImg) })));
+  const items = {};
+  const S = SEQ[key];
+  const ready = Promise.all(Object.keys(DEMO.items).map(async (k) => {
+    const [u0, u1, v0, v1] = DEMO.rects[k];
+    const imgs = await Promise.all(S.files(k).map(f => loadImg('img/' + f)));
+    const meshes = imgs.map((img, i) => {
+      const gg = new THREE.SphereGeometry(495 - i * 0.5, Math.max(8, Math.ceil((u1 - u0) * 200)), Math.max(8, Math.ceil((v1 - v0) * 100)), u0 * 2 * Math.PI, (u1 - u0) * 2 * Math.PI, v0 * Math.PI, (v1 - v0) * Math.PI);
+      gg.scale(-1, 1, 1);
+      const m = new THREE.Mesh(gg, new THREE.MeshBasicMaterial({ map: mkTex(img), alphaMap: feather, transparent: true, opacity: 0, depthTest: false, depthWrite: false }));
+      m.renderOrder = 10 + i; m.visible = false; scene.add(m); return m;
+    });
+    items[k] = { meshes, fr: S.fr, t: 0, target: 0 };
+  }));
+  function resize() { const w = canvas.clientWidth, h = canvas.clientHeight; if (canvas.width !== Math.floor(w * renderer.getPixelRatio()) || canvas.height !== Math.floor(h * renderer.getPixelRatio())) { renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); } }
+  // состояние 0..1 → кадры: между соседними кадрами — плавный переход
+  function apply(it) {
+    const fr = [0].concat(it.fr), x = it.t;
+    let j = 0; while (j < fr.length - 2 && x > fr[j + 1]) j++;
+    const a = Math.max(0, Math.min(1, (x - fr[j]) / (fr[j + 1] - fr[j])));
+    let k = 0; for (let q = 1; q < fr.length; q++) if (x >= fr[q] - 1e-6) k = q;   // покадрово: последний достигнутый кадр
+    it.meshes.forEach((m, i) => { const idx = i + 1; let op = 0;
+      if (window.CUT) op = idx === k ? 1 : 0;
+      else { if (idx === j) op = 1; else if (idx === j + 1) op = a; }
+      m.material.opacity = op; m.visible = op > 0.003; });
+  }
+  return { renderer, scene, camera, items, ready, resize, apply };
+}
+const VA = makeView(document.getElementById('cA'), 'A'), VB = makeView(document.getElementById('cB'), 'B');
+await Promise.all([VA.ready, VB.ready]);
+document.getElementById('load').remove();
+document.getElementById('tA').innerHTML = '<b>Топ</b><br>4 промежуточных кадра + конечный · 4096×2048 · 128 сэмплов';
+document.getElementById('tB').innerHTML = '<b>Эконом</b><br>2 промежуточных кадра 2048×1024 · 64 сэмпла + конечный 4K';
+let DUR = 0.95, slow = false, last = performance.now(); window.CUT = false;
+const btns = [...document.querySelectorAll('button[data-k]')];
+btns.forEach(b => b.onclick = () => { const k = b.dataset.k; const open = !VA.items[k].target;
+  for (const kk of Object.keys(VA.items)) { const tg = kk === k ? (open ? 1 : 0) : 0; VA.items[kk].target = tg; VB.items[kk].target = tg; }
+  btns.forEach(x => x.classList.toggle('on', VA.items[x.dataset.k].target === 1)); });
+document.getElementById('cut').onclick = (e) => { window.CUT = !window.CUT; e.target.classList.toggle('on', window.CUT); };
+document.getElementById('slow').onclick = (e) => { slow = !slow; e.target.classList.toggle('on', slow); };
+// общий поворот обеих панорам
+let drag = null;
+for (const c of document.querySelectorAll('canvas')) {
+  c.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY, lon, lat }; c.setPointerCapture(e.pointerId); });
+  c.addEventListener('pointermove', e => { if (!drag) return; const k = fov / c.clientHeight * Math.PI / 180;
+    lon = drag.lon + (e.clientX - drag.x) * k; lat = Math.max(-1.5, Math.min(1.5, drag.lat + (e.clientY - drag.y) * k)); });
+  c.addEventListener('pointerup', () => drag = null);
+  c.addEventListener('wheel', e => { e.preventDefault(); fov = Math.max(20, Math.min(90, fov + e.deltaY * 0.03)); }, { passive: false });
+}
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  const d = DUR * (slow ? 3 : 1);
+  for (const V_ of [VA, VB]) {
+    V_.resize(); V_.camera.fov = fov; V_.camera.updateProjectionMatrix();
+    V_.camera.lookAt(Math.cos(lon) * Math.cos(lat), Math.sin(lat), Math.sin(lon) * Math.cos(lat));
+    for (const it of Object.values(V_.items)) { const s = Math.sign(it.target - it.t); if (s) { it.t += s * dt / d; if ((s > 0 && it.t > it.target) || (s < 0 && it.t < it.target)) it.t = it.target; } V_.apply(it); }
+    V_.renderer.render(V_.scene, V_.camera);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
