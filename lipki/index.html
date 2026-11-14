@@ -274,7 +274,10 @@ const tweens = [];
 // Повторное нажатие во время движения разворачивает анимацию с текущего кадра; соседние фасады анимируются независимо.
 let ANIM = null; const AREC = {};
 const animP = fetch('pano/anim/anim.json').then(r => r.ok ? r.json() : null).then(j => { ANIM = j; return j; }).catch(() => null);
-const HOLD = new Set();               // группы в движении: их заплатки (и общие с ними) не показываем, пока идут кадры
+const HOLD = new Set();
+const KEEPOPEN = new Set();
+const _REQ = {};
+function reqOf(x) { if (!x) return []; if (!_REQ[x.id]) _REQ[x.id] = (x.req || []).map(nm => (META.groups.find(y => !y.combo && y.movs[0] === nm) || {}).id).filter(Boolean); return _REQ[x.id]; }          // фасад закрывается, но ждёт, пока уедут внутренние — до этого показываем его открытым               // группы в движении: их заплатки (и общие с ними) не показываем, пока идут кадры
 const ACT = {};                       // pk_gid → активная анимация
 // Загрузка кадров без фризов (пользователь 15.11: «периодически фризы»): атлас режется createImageBitmap (вне основного потока),
 // маска для проверки наложения — по уменьшенной копии, текстуры заливаются в видеокарту по очереди, по нескольку мс за кадр.
@@ -349,15 +352,20 @@ function overlapPatch(rec, prec) {
   }
   return n;
 }
-function animOk(pk, gid, keep, others) {
-  if (floor || mode !== 'single' || !ANIM || !ANIM[pk] || !ANIM[pk][gid]) return false;
-  const rec = AREC[pk + '_' + gid]; if (!rec || !rec.ready) return true;      // маска ещё не готова — решим после загрузки
-  for (const o of others) {
+function animOk(pk, gid) {
+  return !(floor || mode !== 'single' || !ANIM || !ANIM[pk] || !ANIM[pk][gid]);
+}
+// 15.11: раньше при наложении на открытую соседку анимация отключалась (холодильник открыт → антресоль без анимации).
+// Теперь кадры играют всегда, но если налезают на видимую заплатку другой открытой группы — рисуются ПОД ней
+// (там, где открытая соседка видна, она перед нашим фасадом).
+function animUnder(pk, gid, rec) {
+  const keep = new Set([gid, ...reqOf(GBY[gid])]);
+  for (const o of opened) {
     if (keep.has(o) || HOLD.has(o)) continue;
     const ids = [o]; META.groups.forEach(c => { if (c.combo && c.combo.includes(o) && !c.combo.includes(gid)) ids.push(c.id); });
-    for (const id of ids) { const pr = patches[pk + '_' + id]; if (pr && pr.mesh && pr.mesh.visible && overlapPatch(rec, pr) > Math.max(30, 0.006 * rec.Un)) return false; }
+    for (const id of ids) { const pr = patches[pk + '_' + id]; if (pr && pr.mesh && pr.mesh.visible && overlapPatch(rec, pr) > Math.max(30, 0.006 * rec.Un)) return true; }
   }
-  return true;
+  return false;
 }
 function hideOwn(pk, gid) {        // своя заплатка (одна или в составе общей) — убрать сразу, иначе видна «призраком» по краю кадра
   Object.entries(patches).forEach(([k, r]) => {
@@ -377,6 +385,7 @@ function startAnim(pk, gid, rec, open) {
     for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === rec.mesh.material) tweens.splice(i, 1);
   }
   for (let i = rec.tex.length - 1; i >= 0; i--) { const t = rec.tex[i], j = UPQ.indexOf(t); if (j >= 0) { UPQ.splice(j, 1); UPQ.unshift(t); } }
+  rec.mesh.renderOrder = animUnder(pk, gid, rec) ? 5 : 1e7;
   A.dir = open ? 1 : -1; A.last = performance.now(); rec.mesh.material.opacity = 1; rec.mesh.visible = true;
   HOLD.add(gid);
   hideOwn(pk, gid);
@@ -396,7 +405,7 @@ function stepAnims(now) {
     }
   }
 }
-function animStopAll() { for (const [k, A] of Object.entries(ACT)) { A.rec.mesh.visible = false; delete ACT[k]; } for (const k of Object.keys(PEND)) { clearTimeout(PEND[k]); delete PEND[k]; } HOLD.clear(); }
+function animStopAll() { for (const [k, A] of Object.entries(ACT)) { A.rec.mesh.visible = false; delete ACT[k]; } for (const k of Object.keys(PEND)) { clearTimeout(PEND[k]); delete PEND[k]; } HOLD.clear(); KEEPOPEN.clear(); }
 function animOut(rec, ms) {      // кадр уходит, когда под ним уже нужная картинка
   const m = rec.mesh.material;
   for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === m) tweens.splice(i, 1);
@@ -427,7 +436,7 @@ async function setGroup(gid, open, quiet) {
   if (!quiet) toast(g, open);
   if (open && !quiet && !(META.parts[cur.id] || {})[gid]) toast(g, open, true);
   const pk = cur.id, keep = new Set([gid, ...reqIds(g)]), key = pk + '_' + gid;
-  if (PEND[key]) { clearTimeout(PEND[key]); delete PEND[key]; HOLD.delete(gid); }
+  if (PEND[key]) { clearTimeout(PEND[key]); delete PEND[key]; HOLD.delete(gid); KEEPOPEN.delete(gid); }
   if (ACT[key]) { startAnim(pk, gid, ACT[key].rec, opened.has(gid)); return; }      // нажали во время движения — разворот
   if (quiet || g.combo) { refresh(pk, false); return; }
   // что закрылось попутно (мешающие соседи при открытии, внутренние ящики при закрытии двери) — сначала они уезжают своей анимацией,
@@ -440,17 +449,18 @@ async function setGroup(gid, open, quiet) {
     else if (rx && rx.ready && ANIM && ANIM[pk] && ANIM[pk][x] && !floor) { startAnim(pk, x, rx, false); goneAnim = true; }
   }
   const go = async () => {
-    delete PEND[key]; HOLD.delete(gid);
+    delete PEND[key]; HOLD.delete(gid); KEEPOPEN.delete(gid);
     if (cur.id !== pk || opened.has(gid) !== open) return;
-    if (animOk(pk, gid, keep, new Set(opened))) {
+    if (animOk(pk, gid)) {
       const p = loadAnim(pk, gid), ar = AREC[key];
       const rec = ar && ar.ready ? ar : await Promise.race([p, new Promise(r => setTimeout(() => r(null), 350))]);
-      if (rec && rec.ready && cur.id === pk && opened.has(gid) === open && !ACT[key] && animOk(pk, gid, keep, new Set(opened))) { startAnim(pk, gid, rec, open); return; }
+      if (rec && rec.ready && cur.id === pk && opened.has(gid) === open && !ACT[key] && animOk(pk, gid)) { startAnim(pk, gid, rec, open); return; }
     }
     refresh(pk, false);
   };
   if (gone.length) {
-    HOLD.add(gid); refresh(pk, false);                 // соседи уезжают (или гаснут), нажатый фасад ждёт
+    if (open) HOLD.add(gid); else KEEPOPEN.add(gid);
+    refresh(pk, false);                 // соседи уезжают (или гаснут), нажатый фасад ждёт
     PEND[key] = setTimeout(go, goneAnim ? ANIM_DUR + 60 : 700);
   } else go();
 }
@@ -461,7 +471,7 @@ function shownSet(pk) {
   // 14.11.2026: каждая пара соседних открытых фасадов должна быть внутри ОДНОЙ показанной заплатки (комбо) — иначе в одиночной заплатке
   // виден торец закрытой соседки (серая полоска на Gola). Комбо могут перекрываться (13+15 и 15+17): там, где заплатка показывает
   // чужой закрытый фасад, глубина «далеко» (cut_l6), и выигрывает та, где он открыт.
-  const S = new Set([...opened].filter(x => !HOLD.has(x))), P = META.parts[pk] || {}, out = new Set();
+  const S = new Set([...opened, ...KEEPOPEN].filter(x => !HOLD.has(x) && !reqOf(GBY[x]).some(r => HOLD.has(r)))), P = META.parts[pk] || {}, out = new Set();
   const combos = META.groups.filter(g => g.combo && P[g.id] && g.combo.every(m => S.has(m))).sort((a, b) => b.combo.length - a.combo.length);
   const pairKey = (a, b) => a < b ? a + ':' + b : b + ':' + a;
   const need = new Set();   // соседство берём из всех комбо проекта: пара, для которой есть общая заплатка, считается соседней
@@ -720,7 +730,7 @@ document.getElementById('fold').onclick = () => { document.body.classList.add('f
 document.getElementById('unfold').onclick = () => { document.body.classList.remove('folded'); store.set('lipki_fold', '0'); };
 const hideBtn = document.getElementById('hideui');
 hideBtn.onclick = () => { const c = document.body.classList.toggle('clean'); hideBtn.setAttribute('aria-pressed', c); hideBtn.setAttribute('aria-label', c ? 'Показать кнопки' : 'Скрыть кнопки'); };
-window.__pano = { pick, setGroup, opened, patches, shownSet, AREC, ACT, HOLD, loadAnim, get ANIM() { return ANIM; }, get META() { return META; }, get cur() { return cur; }, t2uv, dirAt, aim(x, y, z, f) { aimAt({ p: cur.p, look: [x, y, z] }); if (f) fov = f; } };
+window.__pano = { pick, setGroup, opened, patches, shownSet, AREC, ACT, HOLD, KEEPOPEN, loadAnim, get ANIM() { return ANIM; }, get META() { return META; }, get cur() { return cur; }, t2uv, dirAt, aim(x, y, z, f) { aimAt({ p: cur.p, look: [x, y, z] }); if (f) fov = f; } };
 const floorsEl = document.getElementById('floors');
 function buildFloors() {
   const F = (META && META.floors) || []; floorsEl.innerHTML = ''; floorsEl.style.display = F.length > 1 ? '' : 'none';
