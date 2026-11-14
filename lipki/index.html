@@ -315,11 +315,11 @@ async function animPrefetch(pk) {
 // сколько пикселей кадров анимации ложится на видимую часть заплатки другой открытой группы
 function overlapPatch(rec, prec) {
   if (!prec || !prec.alpha) return 0;
-  const a = rec.a, AW = a.res || 2048, [X0, Y0] = a.px, [cw, ch] = a.cell, k8 = 8192 / AW, P = prec.alpha, [px0, py0] = prec.px, s = P.w / ((prec.px[2] - px0) || 1);
+  const a = rec.a, AW = a.res || 2048, [X0, Y0] = a.px, [cw, ch] = a.cell, k8 = 8192 / AW, sc = a.sc || 1, P = prec.alpha, [px0, py0] = prec.px, s = P.w / ((prec.px[2] - px0) || 1);
   let n = 0;
   for (let y = 0; y < ch; y += 2) for (let x = 0; x < cw; x += 2) {
     if (!rec.U[y * cw + x]) continue;
-    const ax = Math.floor(((X0 + x) * k8 - px0) * s), ay = Math.floor(((Y0 + y) * k8 - py0) * s);
+    const ax = Math.floor(((X0 + x / sc) * k8 - px0) * s), ay = Math.floor(((Y0 + y / sc) * k8 - py0) * s);
     if (ax < 0 || ay < 0 || ax >= P.w || ay >= P.h) continue;
     if (P.d[(ay * P.w + ax) * 4 + 3] > 128) n += 4;
   }
