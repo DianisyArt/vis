@@ -268,24 +268,29 @@ function fadeMesh(mesh, to, dur = (to > 0 ? 950 : 750), delay = 0) {
 }
 const tweens = [];
 
-// ---- анимация открывания (14.11.2026): 29 кадров 2K по каждой дверце/ящику, атлас 5 столбцов (pano/anim) ----
+// ---- анимация открывания (14.11.2026): 29 кадров по каждой дверце/ящику, атлас 5 столбцов (pano/anim) ----
 // Кадры отрендерены в «чистой» сцене (открыта только эта группа и то, без чего она не открывается), поэтому играем их,
-// только если рядом нет других открытых фасадов; иначе — обычное проявление заплатки.
+// только если кадры не налезают на заплатки других открытых фасадов (проверка по маскам); иначе — обычное проявление.
+// Повторное нажатие во время движения разворачивает анимацию с текущего кадра; соседние фасады анимируются независимо.
 let ANIM = null; const AREC = {};
 const animP = fetch('pano/anim/anim.json').then(r => r.ok ? r.json() : null).then(j => { ANIM = j; return j; }).catch(() => null);
+const HOLD = new Set();               // группы в движении: их заплатки (и общие с ними) не показываем, пока идут кадры
+const ACT = {};                       // pk_gid → активная анимация
 function loadAnim(pk, gid) {
   const key = pk + '_' + gid; if (AREC[key]) return AREC[key].p;
   const a = ANIM && ANIM[pk] && ANIM[pk][gid]; if (!a) return null;
   const rec = AREC[key] = { a, ready: false };
   rec.p = loadImg('pano/anim/' + a.file).then(img => {
-    const [cw, ch] = a.cell, W = 2048, H = 1024, [X0, Y0, X1, Y1] = a.px;
-    rec.tex = [];
+    const [cw, ch] = a.cell, W = a.res || 2048, H = W / 2, [X0, Y0, X1, Y1] = a.px;
+    rec.tex = []; const U = new Uint8Array(cw * ch);       // объединённая маска всех кадров — для проверки наложения
     for (let k = 0; k < a.n; k++) {
-      const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
-      cv.getContext('2d').drawImage(img, (k % a.cols) * cw, Math.floor(k / a.cols) * ch, cw, ch, 0, 0, cw, ch);
+      const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch; const c = cv.getContext('2d', { willReadFrequently: true });
+      c.drawImage(img, (k % a.cols) * cw, Math.floor(k / a.cols) * ch, cw, ch, 0, 0, cw, ch);
+      if (k % 4 === 0 || k === a.n - 1) { const d = c.getImageData(0, 0, cw, ch).data; for (let i = 0; i < U.length; i++) if (d[i * 4 + 3] > 96) U[i] = 1; }
       const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = false; t.minFilter = THREE.LinearFilter;
       renderer.initTexture(t); rec.tex.push(t);
     }
+    rec.U = U; let n = 0; for (let i = 0; i < U.length; i++) n += U[i]; rec.Un = n;
     const g = new THREE.SphereGeometry(480, Math.max(4, Math.ceil((X1 - X0) / W * 160)), Math.max(4, Math.ceil((Y1 - Y0) / H * 80)),
       X0 / W * 2 * Math.PI, (X1 - X0) / W * 2 * Math.PI, Y0 / H * Math.PI, (Y1 - Y0) / H * Math.PI);
     g.scale(-1, 1, 1);
@@ -294,40 +299,79 @@ function loadAnim(pk, gid) {
   }).catch(() => null);
   return rec.p;
 }
-// кадры текущей точки — в фоне, по одному файлу, чтобы не мешать заплаткам
-let animQ = 0;
 function animFree(pk) {           // кадры других точек — из видеопамяти (на телефоне её мало)
   for (const [k, r] of Object.entries(AREC)) {
     if (k.startsWith(pk + '_') || !r.ready) continue;
     r.tex.forEach(t => t.dispose()); r.mesh.geometry.dispose(); r.mesh.material.dispose(); scene.remove(r.mesh); delete AREC[k];
   }
+  for (const k of Object.keys(ACT)) if (!k.startsWith(pk + '_')) { HOLD.delete(ACT[k].gid); delete ACT[k]; }
 }
+let animQ = 0;
 async function animPrefetch(pk) {
   const my = ++animQ; animFree(pk); await animP; if (!ANIM || !ANIM[pk]) return;
   if (!HI) return;                // телефон: кадры грузятся по первому нажатию (первое открытие — обычное проявление)
   for (const gid of Object.keys(ANIM[pk])) { if (my !== animQ || cur.id !== pk) return; await loadAnim(pk, gid); }
 }
-function rectsHit(a, b) { const w = Math.min(a[2], b[2]) - Math.max(a[0], b[0]), h = Math.min(a[3], b[3]) - Math.max(a[1], b[1]); return w > 0 && h > 0 ? w * h : 0; }
+// сколько пикселей кадров анимации ложится на видимую часть заплатки другой открытой группы
+function overlapPatch(rec, prec) {
+  if (!prec || !prec.alpha) return 0;
+  const a = rec.a, AW = a.res || 2048, [X0, Y0] = a.px, [cw, ch] = a.cell, k8 = 8192 / AW, P = prec.alpha, [px0, py0] = prec.px, s = P.w / ((prec.px[2] - px0) || 1);
+  let n = 0;
+  for (let y = 0; y < ch; y += 2) for (let x = 0; x < cw; x += 2) {
+    if (!rec.U[y * cw + x]) continue;
+    const ax = Math.floor(((X0 + x) * k8 - px0) * s), ay = Math.floor(((Y0 + y) * k8 - py0) * s);
+    if (ax < 0 || ay < 0 || ax >= P.w || ay >= P.h) continue;
+    if (P.d[(ay * P.w + ax) * 4 + 3] > 128) n += 4;
+  }
+  return n;
+}
 function animOk(pk, gid, keep, others) {
   if (floor || mode !== 'single' || !ANIM || !ANIM[pk] || !ANIM[pk][gid]) return false;
-  const a = ANIM[pk][gid].px.map(v => v * 4), area = (a[2] - a[0]) * (a[3] - a[1]), P = META.parts[pk] || {};
-  for (const o of others) { if (keep.has(o) || !P[o]) continue; if (rectsHit(a, P[o].px) > 0.08 * area) return false; }
+  const rec = AREC[pk + '_' + gid]; if (!rec || !rec.ready) return true;      // маска ещё не готова — решим после загрузки
+  for (const o of others) {
+    if (keep.has(o) || HOLD.has(o)) continue;
+    const ids = [o]; META.groups.forEach(c => { if (c.combo && c.combo.includes(o) && !c.combo.includes(gid)) ids.push(c.id); });
+    for (const id of ids) { const pr = patches[pk + '_' + id]; if (pr && pr.mesh && pr.mesh.visible && overlapPatch(rec, pr) > Math.max(30, 0.006 * rec.Un)) return false; }
+  }
   return true;
 }
-const anims = [];
-function playAnim(rec, fwd, done) {
-  for (let i = anims.length - 1; i >= 0; i--) if (anims[i].rec === rec) anims.splice(i, 1);
-  const n = rec.tex.length; rec.mesh.material.map = rec.tex[fwd ? 0 : n - 1]; rec.mesh.material.opacity = 1; rec.mesh.visible = true;
-  anims.push({ rec, fwd, t0: performance.now(), dur: 1050, done });
+function hideOwn(pk, gid) {        // своя заплатка (одна или в составе общей) — убрать сразу, иначе видна «призраком» по краю кадра
+  Object.entries(patches).forEach(([k, r]) => {
+    if (!k.startsWith(pk + '_') || !r.mesh) return; const id = +k.slice(pk.length + 1);
+    if ((GBY[id].combo || [id]).includes(gid)) {
+      for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === r.mesh.material) tweens.splice(i, 1);
+      r.mesh.visible = false; r.mesh.material.opacity = 0; }
+  });
+}
+const ANIM_DUR = 1050;
+function startAnim(pk, gid, rec, open) {
+  const key = pk + '_' + gid, n = rec.tex.length;
+  let A = ACT[key];
+  if (!A) {
+    A = ACT[key] = { pk, gid, rec, pos: open ? 0 : 1 };
+    rec.mesh.material.map = rec.tex[open ? 0 : n - 1];
+    for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === rec.mesh.material) tweens.splice(i, 1);
+  }
+  A.dir = open ? 1 : -1; A.last = performance.now(); rec.mesh.material.opacity = 1; rec.mesh.visible = true;
+  HOLD.add(gid);
+  hideOwn(pk, gid);
+  refresh(pk, false);
 }
 function stepAnims(now) {
-  for (let i = anims.length - 1; i >= 0; i--) {
-    const A = anims[i], k = Math.min(1, (now - A.t0) / A.dur), s = k * k * (3 - 2 * k), n = A.rec.tex.length;
-    const f = Math.round((A.fwd ? s : 1 - s) * (n - 1));
+  for (const [key, A] of Object.entries(ACT)) {
+    const dt = Math.min(now - A.last, 100); A.last = now;
+    A.pos = Math.max(0, Math.min(1, A.pos + A.dir * dt / ANIM_DUR));
+    const s = A.pos * A.pos * (3 - 2 * A.pos), n = A.rec.tex.length, f = Math.round(s * (n - 1));
     if (A.rec.mesh.material.map !== A.rec.tex[f]) A.rec.mesh.material.map = A.rec.tex[f];
-    if (k >= 1) { anims.splice(i, 1); A.done && A.done(); }
+    if ((A.dir > 0 && A.pos >= 1) || (A.dir < 0 && A.pos <= 0)) {
+      delete ACT[key]; HOLD.delete(A.gid);
+      if (cur.id !== A.pk) { A.rec.mesh.visible = false; continue; }
+      refresh(A.pk, false, A.gid);
+      animOut(A.rec, A.dir > 0 ? 160 : 140);
+    }
   }
 }
+function animStopAll() { for (const [k, A] of Object.entries(ACT)) { A.rec.mesh.visible = false; delete ACT[k]; } for (const k of Object.keys(PEND)) { clearTimeout(PEND[k]); delete PEND[k]; } HOLD.clear(); }
 function animOut(rec, ms) {      // кадр уходит, когда под ним уже нужная картинка
   const m = rec.mesh.material;
   for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === m) tweens.splice(i, 1);
@@ -357,35 +401,42 @@ async function setGroup(gid, open, quiet) {
     for (const id of [...opened]) { const x = GBY[id]; if (x && !x.combo && reqIds(x).some(r => !opened.has(r))) { opened.delete(id); changed = true; } } }
   if (!quiet) toast(g, open);
   if (open && !quiet && !(META.parts[cur.id] || {})[gid]) toast(g, open, true);
-  const pk = cur.id, keep = new Set([gid, ...reqIds(g)]);
-  if (!quiet && !g.combo && animOk(pk, gid, keep, new Set([...before, ...opened]))) {
-    const p = loadAnim(pk, gid), ar = AREC[pk + '_' + gid];
-    const rec = ar && ar.ready ? ar : await Promise.race([p, new Promise(r => setTimeout(() => r(null), 350))]);
-    if (rec && rec.ready && cur.id === pk && opened.has(gid) === open) {
-      if (open) {
-        playAnim(rec, true, () => { if (cur.id !== pk) { rec.mesh.visible = false; return; } refresh(pk, true); animOut(rec, 160); });
-      } else {
-        playAnim(rec, false, () => animOut(rec, 140));
-        refresh(pk, true);
-        Object.entries(patches).forEach(([k, r]) => {           // своя заплатка (одна или в составе общей) — убрать сразу, иначе видна «призраком» по краю кадра
-          if (!k.startsWith(pk + '_') || !r.mesh) return; const id = +k.slice(pk.length + 1);
-          if ((GBY[id].combo || [id]).includes(gid) && !LAST[pk].has(id)) {
-            for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === r.mesh.material) tweens.splice(i, 1);
-            r.mesh.visible = false; r.mesh.material.opacity = 0; }
-        });
-      }
-      return;
-    }
+  const pk = cur.id, keep = new Set([gid, ...reqIds(g)]), key = pk + '_' + gid;
+  if (PEND[key]) { clearTimeout(PEND[key]); delete PEND[key]; HOLD.delete(gid); }
+  if (ACT[key]) { startAnim(pk, gid, ACT[key].rec, opened.has(gid)); return; }      // нажали во время движения — разворот
+  if (quiet || g.combo) { refresh(pk, false); return; }
+  // что закрылось попутно (мешающие соседи при открытии, внутренние ящики при закрытии двери) — сначала они уезжают своей анимацией,
+  // потом движется нажатый фасад (иначе сосед пропадал, а фасад появлялся мгновенно)
+  const gone = [...before].filter(x => x !== gid && !opened.has(x));
+  let goneAnim = false;
+  for (const x of gone) {
+    const kx = pk + '_' + x, rx = AREC[kx];
+    if (ACT[kx]) { startAnim(pk, x, ACT[kx].rec, false); goneAnim = true; }
+    else if (rx && rx.ready && ANIM && ANIM[pk] && ANIM[pk][x] && !floor) { startAnim(pk, x, rx, false); goneAnim = true; }
   }
-  refresh(cur.id, false);
+  const go = async () => {
+    delete PEND[key]; HOLD.delete(gid);
+    if (cur.id !== pk || opened.has(gid) !== open) return;
+    if (animOk(pk, gid, keep, new Set(opened))) {
+      const p = loadAnim(pk, gid), ar = AREC[key];
+      const rec = ar && ar.ready ? ar : await Promise.race([p, new Promise(r => setTimeout(() => r(null), 350))]);
+      if (rec && rec.ready && cur.id === pk && opened.has(gid) === open && !ACT[key] && animOk(pk, gid, keep, new Set(opened))) { startAnim(pk, gid, rec, open); return; }
+    }
+    refresh(pk, false);
+  };
+  if (gone.length) {
+    HOLD.add(gid); refresh(pk, false);                 // соседи уезжают (или гаснут), нажатый фасад ждёт
+    PEND[key] = setTimeout(go, goneAnim ? ANIM_DUR + 60 : 700);
+  } else go();
 }
+const PEND = {};
 // что показывать в точке: открытые группы; у двустворчатых (сушка) при обеих открытых створках — общая заплатка,
 // иначе между створками осталась бы щель из закрытого кадра
 function shownSet(pk) {
   // 14.11.2026: каждая пара соседних открытых фасадов должна быть внутри ОДНОЙ показанной заплатки (комбо) — иначе в одиночной заплатке
   // виден торец закрытой соседки (серая полоска на Gola). Комбо могут перекрываться (13+15 и 15+17): там, где заплатка показывает
   // чужой закрытый фасад, глубина «далеко» (cut_l6), и выигрывает та, где он открыт.
-  const S = new Set(opened), P = META.parts[pk] || {}, out = new Set();
+  const S = new Set([...opened].filter(x => !HOLD.has(x))), P = META.parts[pk] || {}, out = new Set();
   const combos = META.groups.filter(g => g.combo && P[g.id] && g.combo.every(m => S.has(m))).sort((a, b) => b.combo.length - a.combo.length);
   const pairKey = (a, b) => a < b ? a + ':' + b : b + ':' + a;
   const need = new Set();   // соседство берём из всех комбо проекта: пара, для которой есть общая заплатка, считается соседней
@@ -399,7 +450,7 @@ function shownSet(pk) {
   S.forEach(m => { if (!members.has(m)) out.add(m); });
   return out;
 }
-function refresh(pk, instant) {
+function refresh(pk, instant, doneGid) {
   Object.entries(patches).forEach(([k, r]) => { if (r.mesh && !k.startsWith(pk + '_')) { r.mesh.visible = false; r.mesh.material.opacity = 0; } });
   if (mode !== 'single' || !META) return;
   const want = shownSet(pk);
@@ -423,7 +474,7 @@ function refresh(pk, instant) {
     if (!rec || cur.id !== pk || mode !== 'single' || !shownSet(pk).has(gid)) return;
     if (rec.mesh.visible && rec.mesh.material.opacity >= 0.99) return;
     // уже был открыт (был внутри общей заплатки) — показываем сразу, без проявления
-    const already = (GBY[gid].combo || [gid]).every(m => wasOpen.has(m));
+    const already = (GBY[gid].combo || [gid]).every(m => wasOpen.has(m)) || (doneGid && (GBY[gid].combo || [gid]).includes(doneGid));
     if (instant || already) { for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === rec.mesh.material) tweens.splice(i, 1);
       rec.mesh.visible = true; rec.mesh.material.opacity = 1; setTop(rec.mesh); } else fadeMesh(rec.mesh, 1);
   });
@@ -548,8 +599,8 @@ PTS.forEach(pt => {
   b.onclick = () => { if (pt !== cur) show(pt, mode, false); }; pt.btn = b; ptsEl.appendChild(b);
 });
 const stC = document.getElementById('stClosed'), stO = document.getElementById('stOpen');
-stC.onclick = () => { opened.clear(); hideAllPatches(); ui(); };
-stO.onclick = () => { if (!META) return; opened.clear(); META.groups.forEach(g => { if (!g.combo && !g.inv) opened.add(g.id); }); refresh(cur.id, false); ui(); };
+stC.onclick = () => { animStopAll(); opened.clear(); hideAllPatches(); ui(); };
+stO.onclick = () => { if (!META) return; animStopAll(); opened.clear(); META.groups.forEach(g => { if (!g.combo && !g.inv) opened.add(g.id); }); refresh(cur.id, false); ui(); };
 function ui() {
   PTS.forEach(p => p.btn.setAttribute('aria-pressed', p === cur));
   const nAll = META ? META.groups.filter(g => !g.combo && !g.inv).length : -1; stO.setAttribute('aria-pressed', opened.size === nAll); stC.setAttribute('aria-pressed', opened.size === 0);
@@ -643,7 +694,7 @@ document.getElementById('fold').onclick = () => { document.body.classList.add('f
 document.getElementById('unfold').onclick = () => { document.body.classList.remove('folded'); store.set('lipki_fold', '0'); };
 const hideBtn = document.getElementById('hideui');
 hideBtn.onclick = () => { const c = document.body.classList.toggle('clean'); hideBtn.setAttribute('aria-pressed', c); hideBtn.setAttribute('aria-label', c ? 'Показать кнопки' : 'Скрыть кнопки'); };
-window.__pano = { pick, setGroup, opened, patches, shownSet, AREC, get ANIM() { return ANIM; }, get META() { return META; }, get cur() { return cur; }, t2uv, dirAt, aim(x, y, z, f) { aimAt({ p: cur.p, look: [x, y, z] }); if (f) fov = f; } };
+window.__pano = { pick, setGroup, opened, patches, shownSet, AREC, ACT, HOLD, loadAnim, get ANIM() { return ANIM; }, get META() { return META; }, get cur() { return cur; }, t2uv, dirAt, aim(x, y, z, f) { aimAt({ p: cur.p, look: [x, y, z] }); if (f) fov = f; } };
 const floorsEl = document.getElementById('floors');
 function buildFloors() {
   const F = (META && META.floors) || []; floorsEl.innerHTML = ''; floorsEl.style.display = F.length > 1 ? '' : 'none';
