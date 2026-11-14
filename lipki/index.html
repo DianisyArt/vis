@@ -276,21 +276,44 @@ let ANIM = null; const AREC = {};
 const animP = fetch('pano/anim/anim.json').then(r => r.ok ? r.json() : null).then(j => { ANIM = j; return j; }).catch(() => null);
 const HOLD = new Set();               // группы в движении: их заплатки (и общие с ними) не показываем, пока идут кадры
 const ACT = {};                       // pk_gid → активная анимация
+// Загрузка кадров без фризов (пользователь 15.11: «периодически фризы»): атлас режется createImageBitmap (вне основного потока),
+// маска для проверки наложения — по уменьшенной копии, текстуры заливаются в видеокарту по очереди, по нескольку мс за кадр.
+const UPQ = [];
+function upTex(t) { if (!t.__up) { renderer.initTexture(t); t.__up = true; } }
+function pumpUploads(budget) { const t0 = performance.now(); while (UPQ.length && performance.now() - t0 < budget) upTex(UPQ.shift()); }
+const nextIdle = () => new Promise(r => (window.requestIdleCallback ? requestIdleCallback(() => r(), { timeout: 300 }) : setTimeout(r, 30)));
 function loadAnim(pk, gid) {
   const key = pk + '_' + gid; if (AREC[key]) return AREC[key].p;
   const a = ANIM && ANIM[pk] && ANIM[pk][gid]; if (!a) return null;
   const rec = AREC[key] = { a, ready: false };
-  rec.p = loadImg('pano/anim/' + a.file).then(img => {
+  rec.p = loadImg('pano/anim/' + a.file).then(async img => {
+    try { await img.decode(); } catch (e) {}
     const [cw, ch] = a.cell, W = a.res || 2048, H = W / 2, [X0, Y0, X1, Y1] = a.px;
-    rec.tex = []; const U = new Uint8Array(cw * ch);       // объединённая маска всех кадров — для проверки наложения
-    for (let k = 0; k < a.n; k++) {
-      const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch; const c = cv.getContext('2d', { willReadFrequently: true });
-      c.drawImage(img, (k % a.cols) * cw, Math.floor(k / a.cols) * ch, cw, ch, 0, 0, cw, ch);
-      if (k % 4 === 0 || k === a.n - 1) { const d = c.getImageData(0, 0, cw, ch).data; for (let i = 0; i < U.length; i++) if (d[i * 4 + 3] > 96) U[i] = 1; }
-      const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = false; t.minFilter = THREE.LinearFilter;
-      renderer.initTexture(t); rec.tex.push(t);
+    const cell = k => [(k % a.cols) * cw, Math.floor(k / a.cols) * ch];
+    let bmps = null;
+    if (window.createImageBitmap) {
+      try { bmps = await Promise.all(Array.from({ length: a.n }, (_, k) => { const [sx, sy] = cell(k); return createImageBitmap(img, sx, sy, cw, ch, { imageOrientation: 'flipY', premultiplyAlpha: 'none' }); })); }
+      catch (e) { bmps = null; }
     }
-    rec.U = U; let n = 0; for (let i = 0; i < U.length; i++) n += U[i]; rec.Un = n;
+    rec.tex = [];
+    for (let k = 0; k < a.n; k++) {
+      let t;
+      if (bmps) { t = new THREE.Texture(bmps[k]); t.flipY = false; }
+      else { const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch; const [sx, sy] = cell(k); cv.getContext('2d').drawImage(img, sx, sy, cw, ch, 0, 0, cw, ch); t = new THREE.Texture(cv); }
+      t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; t.needsUpdate = true;
+      rec.tex.push(t); UPQ.push(t);
+      if (!bmps && k % 6 === 5) await nextIdle();
+    }
+    // объединённая маска кадров (для проверки наложения) — по копии не больше 160 px
+    const ms = Math.min(1, 160 / Math.max(cw, ch)), mw = Math.max(1, Math.round(cw * ms)), mh = Math.max(1, Math.round(ch * ms));
+    const mc = document.createElement('canvas'); mc.width = mw; mc.height = mh; const mx = mc.getContext('2d', { willReadFrequently: true });
+    const U = new Uint8Array(mw * mh);
+    for (let k = 0; k < a.n; k += 4) {
+      mx.clearRect(0, 0, mw, mh); const [sx, sy] = cell(k); mx.drawImage(img, sx, sy, cw, ch, 0, 0, mw, mh);
+      const d = mx.getImageData(0, 0, mw, mh).data; for (let i = 0; i < U.length; i++) if (d[i * 4 + 3] > 96) U[i] = 1;
+    }
+    let n = 0; for (let i = 0; i < U.length; i++) n += U[i];
+    rec.U = U; rec.Uw = mw; rec.Uh = mh; rec.Us = mw / cw; rec.Un = n / (rec.Us * rec.Us);
     const g = new THREE.SphereGeometry(480, Math.max(4, Math.ceil((X1 - X0) / W * 160)), Math.max(4, Math.ceil((Y1 - Y0) / H * 80)),
       X0 / W * 2 * Math.PI, (X1 - X0) / W * 2 * Math.PI, Y0 / H * Math.PI, (Y1 - Y0) / H * Math.PI);
     g.scale(-1, 1, 1);
@@ -302,7 +325,7 @@ function loadAnim(pk, gid) {
 function animFree(pk) {           // кадры других точек — из видеопамяти (на телефоне её мало)
   for (const [k, r] of Object.entries(AREC)) {
     if (k.startsWith(pk + '_') || !r.ready) continue;
-    r.tex.forEach(t => t.dispose()); r.mesh.geometry.dispose(); r.mesh.material.dispose(); scene.remove(r.mesh); delete AREC[k];
+    r.tex.forEach(t => { t.dispose(); if (t.image && t.image.close) t.image.close(); const i = UPQ.indexOf(t); if (i >= 0) UPQ.splice(i, 1); }); r.mesh.geometry.dispose(); r.mesh.material.dispose(); scene.remove(r.mesh); delete AREC[k];
   }
   for (const k of Object.keys(ACT)) if (!k.startsWith(pk + '_')) { HOLD.delete(ACT[k].gid); delete ACT[k]; }
 }
@@ -310,18 +333,19 @@ let animQ = 0;
 async function animPrefetch(pk) {
   const my = ++animQ; animFree(pk); await animP; if (!ANIM || !ANIM[pk]) return;
   if (!HI) return;                // телефон: кадры грузятся по первому нажатию (первое открытие — обычное проявление)
-  for (const gid of Object.keys(ANIM[pk])) { if (my !== animQ || cur.id !== pk) return; await loadAnim(pk, gid); }
+  for (const gid of Object.keys(ANIM[pk])) { if (my !== animQ || cur.id !== pk) return; await nextIdle(); while (UPQ.length > 60 || Object.keys(ACT).length) await new Promise(r => setTimeout(r, 120)); await loadAnim(pk, gid); }
 }
 // сколько пикселей кадров анимации ложится на видимую часть заплатки другой открытой группы
 function overlapPatch(rec, prec) {
   if (!prec || !prec.alpha) return 0;
-  const a = rec.a, AW = a.res || 2048, [X0, Y0] = a.px, [cw, ch] = a.cell, k8 = 8192 / AW, sc = a.sc || 1, P = prec.alpha, [px0, py0] = prec.px, s = P.w / ((prec.px[2] - px0) || 1);
+  const a = rec.a, AW = a.res || 2048, [X0, Y0] = a.px, k8 = 8192 / AW, sc = a.sc || 1, P = prec.alpha, [px0, py0] = prec.px, s = P.w / ((prec.px[2] - px0) || 1);
+  const q = 1 / (rec.Us * sc);              // пиксель маски → пиксели кадра анимации
   let n = 0;
-  for (let y = 0; y < ch; y += 2) for (let x = 0; x < cw; x += 2) {
-    if (!rec.U[y * cw + x]) continue;
-    const ax = Math.floor(((((X0 + x / sc) * k8) % 8192) - px0) * s), ay = Math.floor(((Y0 + y / sc) * k8 - py0) * s);
+  for (let y = 0; y < rec.Uh; y++) for (let x = 0; x < rec.Uw; x++) {
+    if (!rec.U[y * rec.Uw + x]) continue;
+    const ax = Math.floor(((((X0 + (x + 0.5) * q) * k8) % 8192) - px0) * s), ay = Math.floor(((Y0 + (y + 0.5) * q) * k8 - py0) * s);
     if (ax < 0 || ay < 0 || ax >= P.w || ay >= P.h) continue;
-    if (P.d[(ay * P.w + ax) * 4 + 3] > 128) n += 4;
+    if (P.d[(ay * P.w + ax) * 4 + 3] > 128) n += q * q * sc * sc;
   }
   return n;
 }
@@ -352,6 +376,7 @@ function startAnim(pk, gid, rec, open) {
     rec.mesh.material.map = rec.tex[open ? 0 : n - 1];
     for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === rec.mesh.material) tweens.splice(i, 1);
   }
+  for (let i = rec.tex.length - 1; i >= 0; i--) { const t = rec.tex[i], j = UPQ.indexOf(t); if (j >= 0) { UPQ.splice(j, 1); UPQ.unshift(t); } }
   A.dir = open ? 1 : -1; A.last = performance.now(); rec.mesh.material.opacity = 1; rec.mesh.visible = true;
   HOLD.add(gid);
   hideOwn(pk, gid);
@@ -671,6 +696,7 @@ function frame(now) {
     if (k >= 1) { fade.from.material.opacity = 0; fade.m.material.opacity = 1; fade = null; }
   }
   stepAnims(now);
+  pumpUploads(Object.keys(ACT).length ? 2 : 5);
   for (let i = tweens.length - 1; i >= 0; i--) {
     const t = tweens[i], k = Math.max(0, Math.min(1, (now - t.t0) / t.dur)), s = k * k * (3 - 2 * k);
     t.m.opacity = t.from + (t.to - t.from) * s; if (k >= 1) { tweens.splice(i, 1); t.end && t.end(); }
