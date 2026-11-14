@@ -296,8 +296,15 @@ function loadAnim(pk, gid) {
 }
 // кадры текущей точки — в фоне, по одному файлу, чтобы не мешать заплаткам
 let animQ = 0;
+function animFree(pk) {           // кадры других точек — из видеопамяти (на телефоне её мало)
+  for (const [k, r] of Object.entries(AREC)) {
+    if (k.startsWith(pk + '_') || !r.ready) continue;
+    r.tex.forEach(t => t.dispose()); r.mesh.geometry.dispose(); r.mesh.material.dispose(); scene.remove(r.mesh); delete AREC[k];
+  }
+}
 async function animPrefetch(pk) {
-  const my = ++animQ; await animP; if (!ANIM || !ANIM[pk]) return;
+  const my = ++animQ; animFree(pk); await animP; if (!ANIM || !ANIM[pk]) return;
+  if (!HI) return;                // телефон: кадры грузятся по первому нажатию (первое открытие — обычное проявление)
   for (const gid of Object.keys(ANIM[pk])) { if (my !== animQ || cur.id !== pk) return; await loadAnim(pk, gid); }
 }
 function rectsHit(a, b) { const w = Math.min(a[2], b[2]) - Math.max(a[0], b[0]), h = Math.min(a[3], b[3]) - Math.max(a[1], b[1]); return w > 0 && h > 0 ? w * h : 0; }
