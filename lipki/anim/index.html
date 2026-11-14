@@ -57,9 +57,9 @@ const SEQ = {
   A: { name: 'Топ', note: (k) => `${V.top.fr.length - 1} промежуточных + конечный, ${V.top.res[0]}×${V.top.res[1]}, ${DEMO.spp ? '' : '128 сэмплов'}`, fr: V.top.fr, files: (k) => V.top.frames[k] },
   B: { name: 'Эконом', note: (k) => `${V.eco.fr.length - 1} промежуточных (${V.eco.res[0]}×${V.eco.res[1]}, 64 сэмпла) + конечный 4K`, fr: V.eco.fr, files: (k) => V.eco.frames[k].slice(0, -1).concat([V.top.frames[k][V.top.frames[k].length - 1]]) },
 };
-let lon = 0, lat = 0, fov = 62;
+let lon = 0, lat = 0, fov = 80;
 { const r = Object.values(DEMO.rects); const u = (Math.min(...r.map(x => x[0])) + Math.max(...r.map(x => x[1]))) / 2; const v = (Math.min(...r.map(x => x[2])) + Math.max(...r.map(x => x[3]))) / 2;
-  lon = u * 2 * Math.PI; lat = Math.PI / 2 - v * Math.PI; }
+  lon = u * 2 * Math.PI; lat = Math.PI / 2 - (v - 0.02) * Math.PI; }
 function makeView(canvas, key) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true }); renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   const scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera(fov, 1, 1, 2000);
