@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Липки — прототип движка (плитки)</title>
+<style>
+html, body { margin: 0; height: 100%; background: #1d1b19; overflow: hidden; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+canvas { display: block; width: 100vw; height: 100vh; touch-action: none; cursor: grab; }
+canvas:active { cursor: grabbing; }
+#stats { position: fixed; left: 10px; top: 10px; background: rgba(20, 18, 16, .78); color: #efe9e1; font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace;
+  padding: 8px 10px; border-radius: 10px; white-space: pre; pointer-events: none; }
+#bar { position: fixed; left: 10px; bottom: 10px; display: flex; gap: 6px; flex-wrap: wrap; }
+#bar button, #bar a { font: 13px system-ui; padding: 7px 12px; border-radius: 999px; border: 1px solid rgba(255,255,255,.18); background: rgba(32,30,27,.85); color: #efe9e1; cursor: pointer; text-decoration: none; }
+#bar button[aria-pressed="true"] { background: #c9a35c; color: #1d1b19; }
+#boot { position: fixed; inset: 0; display: grid; place-items: center; background: #1d1b19; color: #efe9e1; font: 15px system-ui; transition: opacity .3s; }
+#boot.off { opacity: 0; pointer-events: none; }
+</style></head><body>
+<canvas id="c"></canvas>
+<div id="stats"></div>
+<div id="bar">
+  <button id="bStats" aria-pressed="true">Статистика</button>
+  <button id="bGrid" aria-pressed="false">Сетка плиток</button>
+  <a href="../">Текущая версия</a>
+</div>
+<div id="boot">Загрузка…</div>
+<script type="importmap">{ "imports": { "three": "../lib/three.module.js" } }</script>
+<script type="module">
+// Прототип своего движка, шаг 1 (VIS_ENGINE_PLAN.md): панорама кубом с уровнями детализации (512 → 1024 → 2048 на грань),
+// плитки 512 px. Грузятся и попадают в видеокарту только видимые плитки нужного уровня; одна заливка — 1 МБ, а не 128 МБ.
+import * as THREE from 'three';
+const ROOT = 'tiles/d/';
+const PT = { p: [2.30, -3.352, 1.6], look: [2.3, -0.3, 1.0] };
+const b2t = (d) => new THREE.Vector3(-d[1], d[2], -d[0]);
+
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(70, 1, 0.1, 2000);
+const R = 500;
+let lon = 0, lat = 0, fov = 70;
+{ const d = b2t([PT.look[0] - PT.p[0], PT.look[1] - PT.p[1], PT.look[2] - PT.p[2]]).normalize(); lon = Math.atan2(d.z, d.x); lat = Math.asin(d.y); }
+
+const info = await (await fetch(ROOT + 'info.json')).json();
+const LV = info.levels, T = info.tile, FACES = info.faces;
+const V = (a) => new THREE.Vector3(a[0], a[1], a[2]);
+
+// геометрия плитки: часть грани куба (плоский квадрат), UV под картинку, перевёрнутую при декодировании
+function tileGeo(f, k, tx, ty) {
+  const [c, r, u] = FACES[f].map(V), x0 = tx / k, x1 = (tx + 1) / k, y0 = ty / k, y1 = (ty + 1) / k;
+  const P = (x, y) => c.clone().addScaledVector(r, 2 * x - 1).addScaledVector(u, 1 - 2 * y).multiplyScalar(R);
+  const a = P(x0, y0), b = P(x1, y0), cc = P(x1, y1), d = P(x0, y1);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute([...a.toArray(), ...b.toArray(), ...cc.toArray(), ...d.toArray()], 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute([0, 1, 1, 1, 1, 0, 0, 0], 2));
+  g.setIndex([0, 2, 1, 0, 3, 2]); g.computeBoundingSphere(); return g;
+}
+const tiles = [];                                   // {lv, f, tx, ty, mesh, tex, state, last, url}
+const byKey = {};
+const gridMats = [];
+LV.forEach((N, li) => {
+  const k = N / T;
+  for (const f of Object.keys(FACES)) for (let ty = 0; ty < k; ty++) for (let tx = 0; tx < k; tx++) {
+    const mat = new THREE.MeshBasicMaterial({ depthTest: false, depthWrite: false, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(tileGeo(f, k, tx, ty), mat); mesh.renderOrder = li + 1; mesh.visible = false; mesh.frustumCulled = true; scene.add(mesh);
+    const t = { lv: li, f, tx, ty, mesh, tex: null, state: 0, last: 0, url: ROOT + 'l' + li + '/' + f + '_' + tx + '_' + ty + '.jpg' };
+    tiles.push(t); byKey[li + f + tx + '_' + ty] = t;
+  }
+});
+// превью граней (256 px) — показываются сразу, под всем
+let bytes = 0;
+async function bmpOf(url, prio) {
+  const r = await fetch(url, { priority: prio || 'auto' }); const b = await r.blob(); bytes += b.size;
+  return createImageBitmap(b, { imageOrientation: 'flipY' });
+}
+const mkTex = (bmp) => { const t = new THREE.Texture(bmp); t.flipY = false; t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = true;
+  t.minFilter = THREE.LinearMipmapLinearFilter; t.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy()); t.needsUpdate = true; return t; };
+await Promise.all(Object.keys(FACES).map(async f => {
+  const mesh = new THREE.Mesh(tileGeo(f, 1, 0, 0), new THREE.MeshBasicMaterial({ depthTest: false, depthWrite: false, side: THREE.DoubleSide }));
+  mesh.material.map = mkTex(await bmpOf(ROOT + 'prev_' + f + '.jpg', 'high')); mesh.renderOrder = 0; scene.add(mesh); renderer.initTexture(mesh.material.map);
+}));
+document.getElementById('boot').classList.add('off');
+
+// ---- загрузка: видимые плитки нужного уровня, по удалённости от центра взгляда ----
+const frustum = new THREE.Frustum(), pv = new THREE.Matrix4(), sph = new THREE.Sphere(), fwd = new THREE.Vector3();
+const camWide = new THREE.PerspectiveCamera();
+let inflight = 0; const MAXF = 6; const UPQ = []; let uploaded = 0, tileBytes = 0;
+const MAXTEX = 160;                                  // сколько плиток держим в видеопамяти (≈ 160 МБ с мипами)
+function needLevel() {
+  const hf = 2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(fov) / 2) * camera.aspect) * 180 / Math.PI;
+  const pxPerDeg = renderer.domElement.width / hf;
+  for (let i = 0; i < LV.length; i++) if (LV[i] / 90 >= pxPerDeg * 0.85) return i;
+  return LV.length - 1;
+}
+function schedule(now) {
+  camWide.copy(camera); camWide.fov = Math.min(150, camera.fov * 1.35); camWide.updateProjectionMatrix();
+  pv.multiplyMatrices(camWide.projectionMatrix, camWide.matrixWorldInverse); frustum.setFromProjectionMatrix(pv);
+  camera.getWorldDirection(fwd);
+  const lv = needLevel(), want = [];
+  for (const t of tiles) {
+    if (t.lv > lv) { continue; }
+    sph.copy(t.mesh.geometry.boundingSphere);
+    const vis = frustum.intersectsSphere(sph);
+    if (vis) { t.last = now; if (t.state === 0) want.push(t); }
+  }
+  // сначала грубые уровни (быстро закрыть экран), потом точные; внутри уровня — ближе к центру взгляда
+  want.sort((a, b) => (a.lv - b.lv) || (b.mesh.geometry.boundingSphere.center.dot(fwd) - a.mesh.geometry.boundingSphere.center.dot(fwd)));
+  for (const t of want) {
+    if (inflight >= MAXF) break;
+    t.state = 1; inflight++;
+    bmpOf(t.url).then(bmp => { t.tex = mkTex(bmp); t.state = 2; UPQ.push(t); }).catch(() => { t.state = 0; }).finally(() => { inflight--; });
+  }
+  // вытеснение: давно не видимые точные плитки
+  const live = tiles.filter(t => t.state === 3 && t.lv > 0);
+  if (live.length > MAXTEX) {
+    live.sort((a, b) => a.last - b.last);
+    for (const t of live.slice(0, live.length - MAXTEX)) { if (now - t.last < 2000) break; t.mesh.visible = false; t.mesh.material.map = null; t.tex.image.close && t.tex.image.close(); t.tex.dispose(); t.tex = null; t.state = 0; uploaded--; }
+  }
+}
+function pump(budget) {
+  const t0 = performance.now();
+  while (UPQ.length && performance.now() - t0 < budget) {
+    const t = UPQ.shift(); if (!t.tex) continue;
+    renderer.initTexture(t.tex); t.mesh.material.map = t.tex; t.mesh.material.needsUpdate = true; t.mesh.visible = true; t.state = 3; uploaded++;
+  }
+}
+// ---- управление ----
+let drag = null; const ptrs = new Map(); let pinch0 = 0, fov0 = 70;
+canvas.addEventListener('pointerdown', e => {
+  canvas.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+  if (ptrs.size === 1) drag = { x: e.clientX, y: e.clientY, lon, lat };
+  if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch0 = Math.hypot(a[0] - b[0], a[1] - b[1]); fov0 = fov; drag = null; }
+});
+canvas.addEventListener('pointermove', e => {
+  if (!ptrs.has(e.pointerId)) return; ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+  if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; fov = THREE.MathUtils.clamp(fov0 * pinch0 / Math.hypot(a[0] - b[0], a[1] - b[1]), 20, 95); return; }
+  if (!drag) return; const k = (fov / 70) * 0.0045;
+  lon = drag.lon - (e.clientX - drag.x) * k; lat = THREE.MathUtils.clamp(drag.lat + (e.clientY - drag.y) * k, -1.5, 1.5);
+});
+const up = e => { ptrs.delete(e.pointerId); if (!ptrs.size) drag = null; };
+canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel', up);
+canvas.addEventListener('wheel', e => { e.preventDefault(); fov = THREE.MathUtils.clamp(fov * Math.exp(e.deltaY * 0.0012), 20, 95); }, { passive: false });
+function resize() { renderer.setSize(innerWidth, innerHeight, false); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+// ---- статистика: кадры, самый долгий кадр за 3 с, плитки, скачано ----
+const statsEl = document.getElementById('stats'); let showStats = true, showGrid = false;
+document.getElementById('bStats').onclick = (e) => { showStats = !showStats; statsEl.style.display = showStats ? '' : 'none'; e.target.setAttribute('aria-pressed', showStats); };
+document.getElementById('bGrid').onclick = (e) => { showGrid = !showGrid; e.target.setAttribute('aria-pressed', showGrid);
+  for (const t of tiles) t.mesh.material.color.set(showGrid ? ['#ffb0b0', '#b0ffb0', '#b0c8ff'][t.lv] : '#ffffff'); };
+const ft = []; let lastT = performance.now(), statT = 0, worst = 0;
+function frame(now) {
+  const dt = now - lastT; lastT = now; ft.push([now, dt]); while (ft.length && now - ft[0][0] > 3000) ft.shift();
+  camera.fov = fov; camera.updateProjectionMatrix();
+  camera.lookAt(Math.cos(lat) * Math.cos(lon), Math.sin(lat), Math.cos(lat) * Math.sin(lon)); camera.updateMatrixWorld();
+  schedule(now); pump(4);
+  renderer.render(scene, camera);
+  if (showStats && now - statT > 250) {
+    statT = now; worst = Math.max(...ft.map(x => x[1]));
+    const fps = ft.length / Math.max(0.001, (now - ft[0][0]) / 1000);
+    statsEl.textContent = `кадров/с      ${fps.toFixed(0)}\nдолгий кадр   ${worst.toFixed(0)} мс (за 3 с)\nуровень       ${LV[needLevel()]} px/грань\nплиток в ВП   ${uploaded}\nв очереди     ${UPQ.length + inflight}\nскачано       ${(bytes / 1048576).toFixed(1)} МБ\nполе зрения   ${fov.toFixed(0)}°`;
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+window.__eng = { tiles, get bytes() { return bytes; }, get uploaded() { return uploaded; }, aim(lo, la, f) { lon = lo; lat = la; if (f) fov = f; } };
+</script>
+</body></html>
