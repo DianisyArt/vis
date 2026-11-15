@@ -44,6 +44,8 @@ for pk in PTS:
         for k in range(1, N):
             im = np.asarray(Image.open(bfs[k]).convert("RGB")).astype(np.float32) / 255
             mk = own_at(k) | m0
+            if os.environ.get('MBMASK'):   # кадры со смазом движения (anim_mb.py): смаз тянется к соседним положениям
+                mk = mk | own_at(k - 1) | (own_at(k + 1) if k + 1 < N else mk)
             if mk.shape != im.shape[:2]:
                 h_, w_ = min(mk.shape[0], im.shape[0]), min(mk.shape[1], im.shape[1]); mk2 = np.zeros(im.shape[:2], bool); mk2[:h_, :w_] = mk[:h_, :w_]; mk = mk2
             mk = ndimage.binary_dilation(mk, iterations=2 * W // 2048)
