@@ -189,24 +189,38 @@ const WK_SRC = `self.onmessage = async (e) => {
   } catch (err) { self.postMessage({ id, err: String(err) }); }
 };`;
 let WK = null; const WCB = {}; let wkId = 0;
+// задания идут воркерам по одному на воркер, первым — самое срочное (открытая сейчас дверца), фон — в конце
+const JOBQ = [], WBUSY = new Set();
+function wkPump() {
+  if (!WK) return;
+  for (let i = 0; i < WK.length && JOBQ.length; i++) {
+    if (WBUSY.has(i)) continue;
+    let b = 0; for (let k = 1; k < JOBQ.length; k++) if (JOBQ[k].prio < JOBQ[b].prio || (JOBQ[k].prio === JOBQ[b].prio && JOBQ[k].seq < JOBQ[b].seq)) b = k;
+    if (i === 0 && JOBQ[b].prio > 1) continue;      // фон не занимает срочный воркер
+    const j = JOBQ.splice(b, 1)[0], id = j.seq; WBUSY.add(i);
+    WCB[id] = (d) => { WBUSY.delete(i); d.err ? j.rej(new Error(d.err)) : j.res(d); wkPump(); };
+    WK[i].postMessage(Object.assign({ id }, j.msg));
+  }
+}
+const bumpJobs = (pred, prio) => JOBQ.forEach(j => { if (pred(j.src) && j.prio > prio) j.prio = prio; });
 function wkInit() {
   if (WK !== null) return WK;
   try {
     if (!window.Worker || !window.OffscreenCanvas || !window.createImageBitmap) throw 0;
     const u = URL.createObjectURL(new Blob([WK_SRC], { type: 'text/javascript' }));
-    const n = Math.max(1, Math.min(3, ((navigator.hardwareConcurrency || 4) / 2) | 0));
+    const n = Math.max(2, Math.min(3, ((navigator.hardwareConcurrency || 4) / 2) | 0));   // воркер 0 — только для срочного
     WK = Array.from({ length: n }, () => { const w = new Worker(u); w.onmessage = (e) => { const cb = WCB[e.data.id]; delete WCB[e.data.id]; if (cb) cb(e.data); }; return w; });
   } catch (e) { WK = false; }
   return WK;
 }
 // url → { bmp (ImageBitmap, уже перевёрнут) или img (Image), reads: {имя: {w, h, c, d, lo, hi}} }
-async function decodeAsset(src, tex, reads) {
+async function decodeAsset(src, tex, reads, prio) {
   const u = PRE.has(src) ? ((await PRE.get(src)) || src) : src;
   const W = wkInit();
   if (W) {
     busy(1);
     try {
-      return await new Promise((res, rej) => { const id = ++wkId; WCB[id] = (d) => d.err ? rej(new Error(d.err)) : res(d); W[id % W.length].postMessage({ id, url: new URL(u, location.href).href, tex, reads }); });
+      return await new Promise((res, rej) => { JOBQ.push({ src, prio: prio == null ? 1 : prio, seq: ++wkId, msg: { url: new URL(u, location.href).href, tex, reads }, res, rej }); wkPump(); });
     } catch (e) { /* ниже — запасной путь */ } finally { busy(-1); }
   }
   const img = await loadImg(src), out = { img: tex ? img : null, reads: {} };
@@ -241,7 +255,8 @@ function fetchImg(src, key) {
     PROG[key] = 1; busy(-1); return img;
   }).catch(e => { busy(-1); PROG[key] = 1; return loadImg(src); });
 }
-function loadPano(key) {
+function loadPano(key, prio) {
+  if (cache.has(key) && prio === 0) bumpJobs(u => u.indexOf('pano/' + key) >= 0, 0);
   if (!cache.has(key)) cache.set(key, (async () => {
     const src = 'pano/' + key + (HI ? '' : '_4k') + '.jpg';
     if (wkInit()) {
@@ -255,7 +270,7 @@ function loadPano(key) {
             blob = new Blob(parts); } else blob = await r.blob();
           return URL.createObjectURL(blob);
         }).catch(() => null));
-        const a = await decodeAsset(src, { maxW: MAXT });
+        const a = await decodeAsset(src, { maxW: MAXT }, null, prio == null ? 1 : prio);
         PROG[key] = 1; return mkTex(a.bmp || a.img);
       } finally { busy(-1); PROG[key] = 1; }
     }
@@ -279,8 +294,8 @@ const opened = new Set();                       // id открытых груп�
 const ids = {};                                 // карта фасадов точки: {w, h, data}
 const patches = {};                             // pk_gid → {mesh, alpha, px, ready}
 const metaP = fetch('pano/parts/parts.json').then(r => r.json()).then(m => { META = m; m.groups.forEach(g => { GBY[g.id] = g; }); return m; }).catch(() => null);
-function loadIds(pk) {
-  if (!ids[pk]) ids[pk] = decodeAsset('pano/parts/' + pk + '_ids.png', null, { ids: { s: 1, ch: 1 } }).then(a => { const r = a.reads.ids; return { w: r.w, h: r.h, c: r.c, data: r.d }; }).catch(() => null);
+function loadIds(pk, prio) {
+  if (!ids[pk]) ids[pk] = decodeAsset('pano/parts/' + pk + '_ids.png', null, { ids: { s: 1, ch: 1 } }, prio != null ? prio : (cur && cur.id === pk ? 0 : 2)).then(a => { const r = a.reads.ids; return { w: r.w, h: r.h, c: r.c, data: r.d }; }).catch(() => null);
   return ids[pk];
 }
 // заплатка рисуется шейдером: цвет + маска из WebP, глубина (расстояние до поверхности) из *_d.png → gl_FragDepth,
@@ -309,15 +324,17 @@ function readPixels(img, s) {
   const c = cv.getContext('2d', { willReadFrequently: true }); c.imageSmoothingEnabled = false; c.drawImage(img, 0, 0, cv.width, cv.height);
   return { w: cv.width, h: cv.height, d: c.getImageData(0, 0, cv.width, cv.height).data };
 }
-function loadPatch(pk, gid) {
-  const key = pk + '_' + gid; if (patches[key]) return patches[key].p;
+function loadPatch(pk, gid, urgent, prio) {
+  const key = pk + '_' + gid;
+  if (patches[key]) { if (urgent || prio === 0) { const i = patches[key].info; bumpJobs(u => u.endsWith('/' + i.file) || (i.depth && u.endsWith('/' + i.depth)) || (i.pick && u.endsWith('/' + i.pick)), 0); } return patches[key].p; }
   const info = META && META.parts[pk] && META.parts[pk][gid];
   if (!info) return null;
   const rec = { px: info.px, mesh: null, alpha: null, depth: null, info, texP: null };
+  const pr = prio != null ? prio : urgent ? 0 : (cur && cur.id === pk ? 1 : 2);
   rec.p = Promise.all([
-    decodeAsset('pano/parts/' + info.file, null, { alpha: { s: 0.25 } }),
-    info.depth ? decodeAsset('pano/parts/' + info.depth, null, { depth: { s: 0.5, range: true } }) : null,
-    info.pick ? decodeAsset('pano/parts/' + info.pick, null, { pick: { s: 1 } }).catch(() => null) : null,
+    decodeAsset('pano/parts/' + info.file, null, { alpha: { s: 0.25 } }, pr),
+    info.depth ? decodeAsset('pano/parts/' + info.depth, null, { depth: { s: 0.5, range: true } }, pr) : null,
+    info.pick ? decodeAsset('pano/parts/' + info.pick, null, { pick: { s: 1 } }, pr).catch(() => null) : null,
   ]).then(([a, b, c]) => {
     const [W, H] = META.res, [X0, Y0, X1, Y1] = info.px;
     const g = new THREE.SphereGeometry(490, Math.max(4, Math.ceil((X1 - X0) / W * 160)), Math.max(4, Math.ceil((Y1 - Y0) / H * 80)),
@@ -337,10 +354,10 @@ function loadPatch(pk, gid) {
   patches[key] = rec; return rec.p;
 }
 // текстуры заплатки (цвет + глубина): декодирование в воркере, заливка в видеокарту — по очереди
-function ensureTex(rec) {
-  if (rec.texP) return rec.texP;
+function ensureTex(rec, prio) {
   const info = rec.info;
-  rec.texP = Promise.all([decodeAsset('pano/parts/' + info.file, { cs: 'srgb' }), info.depth ? decodeAsset('pano/parts/' + info.depth, { cs: 'none' }) : null]).then(([a, b]) => {
+  if (rec.texP) { if (prio === 0) bumpJobs(u => u.endsWith('/' + info.file) || (info.depth && u.endsWith('/' + info.depth)), 0); return rec.texP; }
+  rec.texP = Promise.all([decodeAsset('pano/parts/' + info.file, { cs: 'srgb' }, null, prio), info.depth ? decodeAsset('pano/parts/' + info.depth, { cs: 'none' }, null, prio) : null]).then(([a, b]) => {
     if (!rec.texP) { if (a.bmp) a.bmp.close(); if (b && b.bmp) b.bmp.close(); return rec; }   // уже освободили
     if (info.depth) { rec.u.map.value = rawTex(a.bmp || a.img); rec.u.dmap.value = rawTex((b.bmp || b.img), true); UPQ.push(rec.u.map.value, rec.u.dmap.value); }
     else { rec.mesh.material.map = mkTex(a.bmp || a.img); rec.mesh.material.needsUpdate = true; UPQ.push(rec.mesh.material.map); }
@@ -363,7 +380,7 @@ async function warmTex(pk) {
   for (const gid of Object.keys(META.parts[pk])) {
     if (my !== texQ || cur.id !== pk) return;
     const rec = await loadPatch(pk, gid); if (!rec) continue;
-    await ensureTex(rec);
+    await ensureTex(rec, 1);
     while (UPQ.length > 8) await new Promise(r => setTimeout(r, 60));
   }
 }
@@ -389,6 +406,17 @@ function reqOf(x) { if (!x) return []; if (!_REQ[x.id]) _REQ[x.id] = (x.req || [
 const ACT = {};                       // pk_gid → активная анимация
 // Загрузка кадров без фризов (пользователь 15.11: «периодически фризы»): атлас режется createImageBitmap (вне основного потока),
 // маска для проверки наложения — по уменьшенной копии, текстуры заливаются в видеокарту по очереди, по нескольку мс за кадр.
+const ANIM_FS = `uniform sampler2D map; uniform float op; uniform float dz; varying vec2 vUv;
+void main() { vec4 c = texture2D(map, vUv); float a = c.a * op; if (a < 0.01) discard; gl_FragDepth = dz; gl_FragColor = vec4(c.rgb, a); }`;
+// кадры — тем же способом, что заплатки (сырые sRGB-значения, глубина gl_FragDepth): при наложении на открытую соседку
+// побеждает тот, кто ближе (глубина кадра = ближайшая точка своей открытой заплатки)
+function mkAnimMat(tex) {
+  const u = { map: { value: tex }, op: { value: 1 }, dz: { value: 0 } };
+  const m = new THREE.ShaderMaterial({ uniforms: u, vertexShader: PATCH_VS, fragmentShader: ANIM_FS, transparent: true, depthTest: false, depthWrite: false });
+  Object.defineProperty(m, 'opacity', { get: () => u.op.value, set: (v) => { u.op.value = v; }, configurable: true });
+  Object.defineProperty(m, 'map', { get: () => u.map.value, set: (v) => { u.map.value = v; }, configurable: true });
+  return m;
+}
 const UPQ = [];
 function upTex(t) { if (!t.__up) { renderer.initTexture(t); t.__up = true; } }
 function pumpUploads(budget) { const t0 = performance.now(); while (UPQ.length && performance.now() - t0 < budget) upTex(UPQ.shift()); }
@@ -411,7 +439,7 @@ function loadAnim(pk, gid) {
       let t;
       if (bmps) { t = new THREE.Texture(bmps[k]); t.flipY = false; }
       else { const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch; const [sx, sy] = cell(k); cv.getContext('2d').drawImage(img, sx, sy, cw, ch, 0, 0, cw, ch); t = new THREE.Texture(cv); }
-      t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; t.needsUpdate = true;
+      t.colorSpace = THREE.NoColorSpace; t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; t.needsUpdate = true;
       rec.tex.push(t); UPQ.push(t);
       if (!bmps && k % 6 === 5) await nextIdle();
     }
@@ -428,7 +456,7 @@ function loadAnim(pk, gid) {
     const g = new THREE.SphereGeometry(480, Math.max(4, Math.ceil((X1 - X0) / W * 160)), Math.max(4, Math.ceil((Y1 - Y0) / H * 80)),
       X0 / W * 2 * Math.PI, (X1 - X0) / W * 2 * Math.PI, Y0 / H * Math.PI, (Y1 - Y0) / H * Math.PI);
     g.scale(-1, 1, 1);
-    rec.mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ map: rec.tex[0], transparent: true, depthTest: false, depthWrite: false }));
+    rec.mesh = new THREE.Mesh(g, mkAnimMat(rec.tex[0]));
     rec.mesh.renderOrder = 1e7; rec.mesh.visible = false; scene.add(rec.mesh); rec.ready = true; return rec;
   }).catch(() => null);
   return rec.p;
@@ -484,6 +512,7 @@ function hideOwn(pk, gid) {        // своя заплатка (одна или
   });
 }
 const ANIM_DUR = 1050;
+function shownTargets(pk, gid) { const out = []; const was = HOLD.has(gid); HOLD.delete(gid); shownSet(pk).forEach(id => { if ((GBY[id].combo || [id]).includes(gid)) out.push(id); }); if (was) HOLD.add(gid); return out; }
 function startAnim(pk, gid, rec, open) {
   const key = pk + '_' + gid, n = rec.tex.length;
   let A = ACT[key];
@@ -493,7 +522,13 @@ function startAnim(pk, gid, rec, open) {
     for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === rec.mesh.material) tweens.splice(i, 1);
   }
   for (let i = rec.tex.length - 1; i >= 0; i--) { const t = rec.tex[i], j = UPQ.indexOf(t); if (j >= 0) { UPQ.splice(j, 1); UPQ.unshift(t); } }
-  rec.mesh.renderOrder = animUnder(pk, gid, rec) ? 5 : 1e7;
+  rec.mesh.renderOrder = 1e7;
+  { const own = patches[key], parentVis = reqOf(GBY[gid]).some(r => { const pr = patches[pk + '_' + r]; return pr && pr.mesh && pr.mesh.visible; });
+    const lo = own && own.u && own.depth ? own.u.dr.value.x : null;
+    // глубина — только когда нет открытого родителя (внутренний ящик едет внутри его заплатки) и это не «закрыть внутренний»
+    if (lo != null && lo > 0 && !parentVis && !GBY[gid].inv) { rec.mesh.material.depthTest = true; rec.mesh.material.uniforms.dz.value = Math.max(0, lo - 0.002); }
+    else rec.mesh.material.depthTest = false; }
+  if (open) shownTargets(pk, gid).forEach(id => { const p = loadPatch(pk, id, true); if (p) p.then(r => r && ensureTex(r, 0)); });   // заплатки конца — заранее
   A.dir = open ? 1 : -1; A.last = performance.now(); rec.mesh.material.opacity = 1; rec.mesh.visible = true;
   HOLD.add(gid);
   hideOwn(pk, gid);
@@ -508,8 +543,13 @@ function stepAnims(now) {
     if ((A.dir > 0 && A.pos >= 1) || (A.dir < 0 && A.pos <= 0)) {
       delete ACT[key]; HOLD.delete(A.gid);
       if (cur.id !== A.pk) { A.rec.mesh.visible = false; continue; }
-      refresh(A.pk, false, A.gid);
-      animOut(A.rec, A.dir > 0 ? 160 : 140);
+      if (A.dir > 0) {                                  // кадр не убираем, пока заплатка конца не готова (иначе мелькает закрытое)
+        const ids = shownTargets(A.pk, A.gid);
+        Promise.all(ids.map(id => { const p = loadPatch(A.pk, id, true); return p ? p.then(r => r && ensureTex(r, 0)) : null; })).then(() => {
+          if (ACT[key]) return;                           // успели развернуть
+          refresh(A.pk, false, A.gid); setTimeout(() => { if (!ACT[key]) animOut(A.rec, 160); }, 60);
+        });
+      } else { refresh(A.pk, false, A.gid); animOut(A.rec, 140); }
     }
   }
 }
@@ -613,8 +653,8 @@ function refresh(pk, instant, doneGid) {
       }
       return;
     }
-    let rec = await loadPatch(pk, gid);
-    if (rec) rec = await ensureTex(rec);
+    let rec = await loadPatch(pk, gid, true);
+    if (rec) rec = await ensureTex(rec, 0);
     if (!rec || cur.id !== pk || mode !== 'single' || !shownSet(pk).has(gid)) return;
     upTex(rec.u ? rec.u.map.value : rec.mesh.material.map); if (rec.u) upTex(rec.u.dmap.value);
     if (rec.mesh.visible && rec.mesh.material.opacity >= 0.99) return;
@@ -691,8 +731,8 @@ async function preparePoint(pt, silent) {
   let done = 0; const tot = gids.length + 1;
   const frac = () => 0.55 * (PROG[key] || 0) + 0.45 * done / tot; PREPF[key] = frac;
   const iv = setInterval(() => { if (!silent) setBoot(frac()); }, 100);
-  const pr = [silent ? prefetch('pano/' + key + (HI ? '' : '_4k') + '.jpg') : loadPano(key), loadIds(pt.id).then(() => { done++; })];
-  gids.forEach(g => { const p = loadPatch(pt.id, g); if (p) pr.push(p.then(() => { done++; }, () => { done++; })); else done++; });
+  const pr = [silent ? prefetch('pano/' + key + (HI ? '' : '_4k') + '.jpg') : loadPano(key, 0), loadIds(pt.id, silent ? 2 : 0).then(() => { done++; })];
+  gids.forEach(g => { const p = loadPatch(pt.id, g, false, silent ? 2 : 0); if (p) pr.push(p.then(() => { done++; }, () => { done++; })); else done++; });
   await Promise.allSettled(pr); clearInterval(iv);
   READY.add(key); booted = true; res();
   if (!silent) { setBoot(1); clearTimeout(bootTimer); setTimeout(() => bootEl.classList.add('off'), 150); }
@@ -720,9 +760,13 @@ async function warmAll() {
     if (full) await preparePoint(q, true);
   }
 }
+let showSeq = 0;
 async function show(pt, md, keepView) {
+  const my = ++showSeq;                                // быстрые нажатия по точкам: показываем только последнюю
   await preparePoint(pt);
-  const tex = await loadPano(pt.id + '_closed' + floor);
+  if (my !== showSeq) return;
+  const tex = await loadPano(pt.id + '_closed' + floor, 0);
+  if (my !== showSeq) return;
   upTex(tex);
   const next = 1 - top, m = layers[next];
   m.material.map = tex; m.material.needsUpdate = true; m.material.opacity = 0; m.renderOrder = 2; layers[top].renderOrder = 1;
@@ -735,7 +779,7 @@ async function show(pt, md, keepView) {
   setTimeout(() => {                                   // фоновая подгрузка
     metaP.then(() => { if (META && META.parts[pt.id]) Object.keys(META.parts[pt.id]).forEach(gid => loadPatch(pt.id, gid)); });
     trimPanos();                                     // ближайшие две точки — заранее (воркер), остальные — только файлы
-    PTS.slice().sort((a, b) => Math.hypot(a.p[0] - pt.p[0], a.p[1] - pt.p[1]) - Math.hypot(b.p[0] - pt.p[0], b.p[1] - pt.p[1])).slice(1, 3).forEach(q => loadPano(q.id + '_closed' + floor));
+    PTS.slice().sort((a, b) => Math.hypot(a.p[0] - pt.p[0], a.p[1] - pt.p[1]) - Math.hypot(b.p[0] - pt.p[0], b.p[1] - pt.p[1])).slice(1, 3).forEach(q => loadPano(q.id + '_closed' + floor, 2));
     warmTex(pt.id);
     warmAll();
   }, 400);
@@ -843,7 +887,7 @@ document.getElementById('fold').onclick = () => { document.body.classList.add('f
 document.getElementById('unfold').onclick = () => { document.body.classList.remove('folded'); store.set('lipki_fold', '0'); };
 const hideBtn = document.getElementById('hideui');
 hideBtn.onclick = () => { const c = document.body.classList.toggle('clean'); hideBtn.setAttribute('aria-pressed', c); hideBtn.setAttribute('aria-label', c ? 'Показать кнопки' : 'Скрыть кнопки'); };
-window.__pano = { pick, setGroup, opened, patches, shownSet, AREC, ACT, HOLD, KEEPOPEN, loadAnim, get ANIM() { return ANIM; }, get META() { return META; }, get cur() { return cur; }, t2uv, dirAt, aim(x, y, z, f) { aimAt({ p: cur.p, look: [x, y, z] }); if (f) fov = f; } };
+window.__pano = { pick, setGroup, opened, patches, shownSet, AREC, ACT, HOLD, KEEPOPEN, loadAnim, JOBQ, WBUSY, get WKN() { return WK ? WK.length : 0; }, get ANIM() { return ANIM; }, get META() { return META; }, get cur() { return cur; }, t2uv, dirAt, aim(x, y, z, f) { aimAt({ p: cur.p, look: [x, y, z] }); if (f) fov = f; } };
 const floorsEl = document.getElementById('floors');
 function buildFloors() {
   const F = (META && META.floors) || []; floorsEl.innerHTML = ''; floorsEl.style.display = F.length > 1 ? '' : 'none';
