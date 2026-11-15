@@ -254,7 +254,11 @@ function pumpTiles(budget) {
 // дождаться, пока превью граней и видимые плитки нужного уровня будут в видеокарте (точка показывается уже чёткой)
 function warmLayer(L, lo, la, fv) {
   L.warmCam = camFor(lo, la, fv);
-  return new Promise(res => { const t0 = performance.now(); L.warmRes = () => { if (L.warmMissing === 0 || performance.now() - t0 > 4000) { L.warmCam = null; L.warmRes = null; res(); } }; });
+  return new Promise(res => {
+    const t0 = performance.now(), done = () => { if (!L.warmRes) return; L.warmCam = null; L.warmRes = null; res(); };
+    L.warmRes = () => { if (L.warmMissing === 0 || performance.now() - t0 > 4000) done(); };
+    setTimeout(done, 5000);                            // вкладка в фоне (кадры не идут) — не зависаем
+  });
 }
 function tickTiles(now) {
   if (!MAN) return;
