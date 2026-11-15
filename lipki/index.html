@@ -398,6 +398,11 @@ const tweens = [];
 // только если кадры не налезают на заплатки других открытых фасадов (проверка по маскам); иначе — обычное проявление.
 // Повторное нажатие во время движения разворачивает анимацию с текущего кадра; соседние фасады анимируются независимо.
 let ANIM = null; const AREC = {};
+// «Открыть всё» (15.11, пользователь: «всё друг в друга входит»): мешающие пары не открываем до конца — AVENTOS до антресолей,
+// ПММ до острова, дверь мойки до ПММ и т.д. Доля хода посчитана в Blender по пересечению (allopen_limits.py) и показывается
+// кадром анимации k из 30, без перерендера.
+let ALLMODE = false, ALIM = {}; const ALLSHOWN = new Set();
+fetch('pano/anim/allopen.json').then(r => r.ok ? r.json() : null).then(j => { if (j && j.limits) ALIM = j.limits; }).catch(() => {});
 const animP = fetch('pano/anim/anim.json').then(r => r.ok ? r.json() : null).then(j => { ANIM = j; return j; }).catch(() => null);
 const HOLD = new Set();
 const KEEPOPEN = new Set();
@@ -567,6 +572,7 @@ function conflictsOf(g) {
 }
 async function setGroup(gid, open, quiet) {
   const g = GBY[gid]; if (!g) return;
+  if (ALLMODE) { ALLMODE = false; for (const L of Object.keys(ALIM)) if (+L !== gid) opened.delete(+L); }
   const before = new Set(opened);
   const reqIds = (x) => (x.req || []).map(nm => (META.groups.find(y => !y.combo && y.movs[0] === nm) || {}).id).filter(Boolean);
   if (open) {
@@ -619,7 +625,7 @@ function shownSet(pk) {
   // 14.11.2026: каждая пара соседних открытых фасадов должна быть внутри ОДНОЙ показанной заплатки (комбо) — иначе в одиночной заплатке
   // виден торец закрытой соседки (серая полоска на Gola). Комбо могут перекрываться (13+15 и 15+17): там, где заплатка показывает
   // чужой закрытый фасад, глубина «далеко» (cut_l6), и выигрывает та, где он открыт.
-  const S = new Set([...opened, ...KEEPOPEN].filter(x => !HOLD.has(x) && !reqOf(GBY[x]).some(r => HOLD.has(r)))), P = META.parts[pk] || {}, out = new Set();
+  const S = new Set([...opened, ...KEEPOPEN].filter(x => !HOLD.has(x) && !reqOf(GBY[x]).some(r => HOLD.has(r)) && !(ALLMODE && ALIM[x] != null))), P = META.parts[pk] || {}, out = new Set();
   const combos = META.groups.filter(g => g.combo && P[g.id] && g.combo.every(m => S.has(m))).sort((a, b) => b.combo.length - a.combo.length);
   const pairKey = (a, b) => a < b ? a + ':' + b : b + ':' + a;
   const need = new Set();   // соседство берём из всех комбо проекта: пара, для которой есть общая заплатка, считается соседней
@@ -634,6 +640,7 @@ function shownSet(pk) {
   return out;
 }
 function refresh(pk, instant, doneGid) {
+  applyAllLimits(pk);
   Object.entries(patches).forEach(([k, r]) => { if (r.mesh && !k.startsWith(pk + '_')) { r.mesh.visible = false; r.mesh.material.opacity = 0; } });
   if (mode !== 'single' || !META) return;
   const want = shownSet(pk);
@@ -665,6 +672,20 @@ function refresh(pk, instant, doneGid) {
   });
 }
 function applyOpened(pk, instant) { refresh(pk, instant); }
+async function applyAllLimits(pk) {
+  for (const key of [...ALLSHOWN]) { const r = AREC[key]; if (!ALLMODE || !key.startsWith(pk + '_') || !opened.has(+key.split('_')[1])) { if (r && r.mesh && !ACT[key]) animOut(r, 200); ALLSHOWN.delete(key); } }
+  if (!ALLMODE) return;
+  for (const [gs, k] of Object.entries(ALIM)) {
+    const gid = +gs, key = pk + '_' + gid; if (!opened.has(gid) || !k || !ANIM || !ANIM[pk] || !ANIM[pk][gid]) continue;
+    const rec = await loadAnim(pk, gid); if (!rec || !rec.ready || !ALLMODE || cur.id !== pk) continue;
+    for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === rec.mesh.material) tweens.splice(i, 1);
+    rec.mesh.material.map = rec.tex[Math.min(rec.tex.length, k) - 1]; rec.tex.forEach(upTex);
+    const own = patches[key]; const lo = own && own.u && own.depth ? own.u.dr.value.x : null;
+    rec.mesh.renderOrder = 1e7; if (lo) { rec.mesh.material.depthTest = true; rec.mesh.material.uniforms.dz.value = Math.max(0, lo - 0.002); } else rec.mesh.material.depthTest = false;
+    if (!rec.mesh.visible) { rec.mesh.material.opacity = 0; rec.mesh.visible = true; tweens.push({ m: rec.mesh.material, from: 0, to: 1, t0: performance.now(), dur: 900 }); }
+    ALLSHOWN.add(key);
+  }
+}
 function hideAllPatches() { Object.values(patches).forEach(r => { if (r.mesh && r.mesh.visible) fadeMesh(r.mesh, 0, 300); }); }
 
 // что под пальцем: сначала открытые заплатки (верхняя первой), потом карта фасадов
@@ -791,8 +812,8 @@ PTS.forEach(pt => {
   b.onclick = () => { if (pt !== cur) show(pt, mode, false); }; pt.btn = b; ptsEl.appendChild(b);
 });
 const stC = document.getElementById('stClosed'), stO = document.getElementById('stOpen');
-stC.onclick = () => { animStopAll(); opened.clear(); hideAllPatches(); ui(); };
-stO.onclick = () => { if (!META) return; animStopAll(); opened.clear(); META.groups.forEach(g => { if (!g.combo && !g.inv) opened.add(g.id); }); refresh(cur.id, false); ui(); };
+stC.onclick = () => { animStopAll(); ALLMODE = false; opened.clear(); hideAllPatches(); applyAllLimits(cur.id); ui(); };
+stO.onclick = () => { if (!META) return; animStopAll(); opened.clear(); ALLMODE = true; META.groups.forEach(g => { if (!g.combo && !g.inv) opened.add(g.id); }); refresh(cur.id, false); ui(); };
 function ui() {
   PTS.forEach(p => p.btn.setAttribute('aria-pressed', p === cur));
   const nAll = META ? META.groups.filter(g => !g.combo && !g.inv).length : -1; stO.setAttribute('aria-pressed', opened.size === nAll); stC.setAttribute('aria-pressed', opened.size === 0);
