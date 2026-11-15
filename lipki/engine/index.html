@@ -313,7 +313,23 @@ async function loadImg(src) {
 // Раньше на основном потоке: getImageData карт фасадов 8K (128 МБ на точку), масок и глубины 450 заплаток, декодирование
 // панорам всех 8 точек сразу. Теперь это делают воркеры (OffscreenCanvas), основному потоку остаётся только залить текстуру.
 const WK_SRC = `self.onmessage = async (e) => {
-  const { id, url, tex, reads } = e.data;
+  const { id, url, tex, reads, anim } = e.data;
+  if (anim) {                      // атлас кадров анимации: режем на кадры и считаем общую маску здесь, не в основном потоке
+    try {
+      const blob = await (await fetch(url)).blob();
+      const base = await createImageBitmap(blob, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+      const { n, cols, cw, ch, mw, mh } = anim, bmps = [];
+      for (let k = 0; k < n; k++) bmps.push(await createImageBitmap(base, (k % cols) * cw, Math.floor(k / cols) * ch, cw, ch, { imageOrientation: 'flipY', premultiplyAlpha: 'none', colorSpaceConversion: 'none' }));
+      const oc = new OffscreenCanvas(mw, mh), c = oc.getContext('2d', { willReadFrequently: true }), U = new Uint8Array(mw * mh);
+      for (let k = 0; k < n; k += 4) {
+        c.clearRect(0, 0, mw, mh); c.drawImage(base, (k % cols) * cw, Math.floor(k / cols) * ch, cw, ch, 0, 0, mw, mh);
+        const d = c.getImageData(0, 0, mw, mh).data; for (let i = 0; i < U.length; i++) if (d[i * 4 + 3] > 96) U[i] = 1;
+      }
+      base.close();
+      self.postMessage({ id, bmps, U }, [...bmps, U.buffer]);
+    } catch (err) { self.postMessage({ id, err: String(err) }); }
+    return;
+  }
   try {
     const blob = await (await fetch(url)).blob();
     const needBase = (reads && Object.keys(reads).length) || (tex && tex.maxW);
@@ -362,6 +378,7 @@ function wkInit() {
   } catch (e) { WK = false; }
   return WK;
 }
+function wkJob(src, msg, prio) { return new Promise((res, rej) => { JOBQ.push({ src, prio: prio == null ? 1 : prio, seq: ++wkId, msg, res, rej }); wkPump(); }); }
 // url → { bmp (ImageBitmap, уже перевёрнут) или img (Image), reads: {имя: {w, h, c, d, lo, hi}} }
 async function decodeAsset(src, tex, reads, prio) {
   const u = PRE.has(src) ? ((await PRE.get(src)) || src) : src;
@@ -369,7 +386,7 @@ async function decodeAsset(src, tex, reads, prio) {
   if (W) {
     busy(1);
     try {
-      return await new Promise((res, rej) => { JOBQ.push({ src, prio: prio == null ? 1 : prio, seq: ++wkId, msg: { url: new URL(u, location.href).href, tex, reads }, res, rej }); wkPump(); });
+      return await wkJob(src, { url: new URL(u, location.href).href, tex, reads }, prio);
     } catch (e) { /* ниже — запасной путь */ } finally { busy(-1); }
   }
   const img = await loadImg(src), out = { img: tex ? img : null, reads: {} };
@@ -541,25 +558,51 @@ function reqOf(x) { if (!x) return []; if (!_REQ[x.id]) _REQ[x.id] = (x.req || [
 const ACT = {};                       // pk_gid → активная анимация
 // Загрузка кадров без фризов (пользователь 15.11: «периодически фризы»): атлас режется createImageBitmap (вне основного потока),
 // маска для проверки наложения — по уменьшенной копии, текстуры заливаются в видеокарту по очереди, по нескольку мс за кадр.
-const ANIM_FS = `uniform sampler2D map; uniform float op; uniform float dz; varying vec2 vUv;
-void main() { vec4 c = texture2D(map, vUv); float a = c.a * op; if (a < 0.01) discard; gl_FragDepth = dz; gl_FragColor = vec4(c.rgb, a); }`;
+// 15.11 (пользователь: «рывки, как пластилиновый мультик»): между соседними кадрами — плавное смешивание (map → map2 по mt),
+// чтобы 29 кадров на секунду не «щёлкали» на экране 120–165 Гц. Смешиваем с учётом прозрачности, чтобы не было тёмной каймы.
+const ANIM_FS = `uniform sampler2D map; uniform sampler2D map2; uniform float mt; uniform float op; uniform float dz; varying vec2 vUv;
+void main() { vec4 c0 = texture2D(map, vUv), c1 = texture2D(map2, vUv);
+  float a0 = c0.a * (1.0 - mt), a1 = c1.a * mt, ca = a0 + a1;
+  vec3 rgb = ca > 1e-4 ? (c0.rgb * a0 + c1.rgb * a1) / ca : c0.rgb;
+  float a = ca * op; if (a < 0.01) discard; gl_FragDepth = dz; gl_FragColor = vec4(rgb, a); }`;
 // кадры — тем же способом, что заплатки (сырые sRGB-значения, глубина gl_FragDepth): при наложении на открытую соседку
 // побеждает тот, кто ближе (глубина кадра = ближайшая точка своей открытой заплатки)
 function mkAnimMat(tex) {
-  const u = { map: { value: tex }, op: { value: 1 }, dz: { value: 0 } };
+  const u = { map: { value: tex }, map2: { value: tex }, mt: { value: 0 }, op: { value: 1 }, dz: { value: 0 } };
   const m = new THREE.ShaderMaterial({ uniforms: u, vertexShader: PATCH_VS, fragmentShader: ANIM_FS, transparent: true, depthTest: false, depthWrite: false });
   Object.defineProperty(m, 'opacity', { get: () => u.op.value, set: (v) => { u.op.value = v; }, configurable: true });
-  Object.defineProperty(m, 'map', { get: () => u.map.value, set: (v) => { u.map.value = v; }, configurable: true });
+  Object.defineProperty(m, 'map', { get: () => u.map.value, set: (v) => { u.map.value = v; u.map2.value = v; u.mt.value = 0; }, configurable: true });
   return m;
 }
 const UPQ = [];
 function upTex(t) { if (!t.__up) { renderer.initTexture(t); t.__up = true; } }
 function pumpUploads(budget) { const t0 = performance.now(); while (UPQ.length && performance.now() - t0 < budget) upTex(UPQ.shift()); }
 const nextIdle = () => new Promise(r => (window.requestIdleCallback ? requestIdleCallback(() => r(), { timeout: 300 }) : setTimeout(r, 30)));
-function loadAnim(pk, gid) {
-  const key = pk + '_' + gid; if (AREC[key]) return AREC[key].p;
+// 15.11 (движок): разрезка атласа и маска — в воркере; раньше это делал основной поток, и пока кадры готовились в фоне,
+// были подвисания по 0,3–4 с (пользователь: «просадки до 6 кадров», пока всё не догрузилось)
+function animMesh(rec) {
+  const a = rec.a, W = a.res || 2048, H = W / 2, [X0, Y0, X1, Y1] = a.px;
+  const g = new THREE.SphereGeometry(480, Math.max(4, Math.ceil((X1 - X0) / W * 160)), Math.max(4, Math.ceil((Y1 - Y0) / H * 80)),
+    X0 / W * 2 * Math.PI, (X1 - X0) / W * 2 * Math.PI, Y0 / H * Math.PI, (Y1 - Y0) / H * Math.PI);
+  g.scale(-1, 1, 1);
+  rec.mesh = new THREE.Mesh(g, mkAnimMat(rec.tex[0]));
+  rec.mesh.renderOrder = 1e7; rec.mesh.visible = false; scene.add(rec.mesh); rec.ready = true; return rec;
+}
+function loadAnim(pk, gid, prio) {
+  const key = pk + '_' + gid; if (AREC[key]) { if (prio === 0) bumpJobs(u => u === '../pano/anim/' + AREC[key].a.file, 0); return AREC[key].p; }
   const a = ANIM && ANIM[pk] && ANIM[pk][gid]; if (!a) return null;
   const rec = AREC[key] = { a, ready: false };
+  if (wkInit()) {
+    const src = '../pano/anim/' + a.file, [cw, ch] = a.cell, ms = Math.min(1, 160 / Math.max(cw, ch)), mw = Math.max(1, Math.round(cw * ms)), mh = Math.max(1, Math.round(ch * ms));
+    rec.p = prefetch(src).then(u => wkJob(src, { url: new URL(u || src, location.href).href, anim: { n: a.n, cols: a.cols, cw, ch, mw, mh } }, prio == null ? 2 : prio)).then(d => {
+      if (AREC[key] !== rec) { d.bmps.forEach(b => b.close()); return null; }
+      rec.tex = d.bmps.map(b => { const t = new THREE.Texture(b); t.flipY = false; t.colorSpace = THREE.NoColorSpace; t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; t.needsUpdate = true; UPQ.push(t); return t; });
+      let n = 0; for (let i = 0; i < d.U.length; i++) n += d.U[i];
+      rec.U = d.U; rec.Uw = mw; rec.Uh = mh; rec.Us = mw / cw; rec.Un = n / (rec.Us * rec.Us);
+      return animMesh(rec);
+    }).catch(() => null);
+    return rec.p;
+  }
   rec.p = loadImg('../pano/anim/' + a.file).then(async img => {
     try { await img.decode(); } catch (e) {}
     const [cw, ch] = a.cell, W = a.res || 2048, H = W / 2, [X0, Y0, X1, Y1] = a.px;
@@ -588,11 +631,7 @@ function loadAnim(pk, gid) {
     }
     let n = 0; for (let i = 0; i < U.length; i++) n += U[i];
     rec.U = U; rec.Uw = mw; rec.Uh = mh; rec.Us = mw / cw; rec.Un = n / (rec.Us * rec.Us);
-    const g = new THREE.SphereGeometry(480, Math.max(4, Math.ceil((X1 - X0) / W * 160)), Math.max(4, Math.ceil((Y1 - Y0) / H * 80)),
-      X0 / W * 2 * Math.PI, (X1 - X0) / W * 2 * Math.PI, Y0 / H * Math.PI, (Y1 - Y0) / H * Math.PI);
-    g.scale(-1, 1, 1);
-    rec.mesh = new THREE.Mesh(g, mkAnimMat(rec.tex[0]));
-    rec.mesh.renderOrder = 1e7; rec.mesh.visible = false; scene.add(rec.mesh); rec.ready = true; return rec;
+    return animMesh(rec);
   }).catch(() => null);
   return rec.p;
 }
@@ -674,7 +713,8 @@ function stepAnims(now) {
     const dt = Math.min(now - A.last, 100); A.last = now;
     A.pos = Math.max(0, Math.min(1, A.pos + A.dir * dt / ANIM_DUR));
     const s = A.pos * A.pos * (3 - 2 * A.pos), n = A.rec.tex.length, f = Math.round(s * (n - 1));
-    if (A.rec.mesh.material.map !== A.rec.tex[f]) A.rec.mesh.material.map = A.rec.tex[f];
+    { const fp = s * (n - 1), f0 = Math.min(n - 1, Math.floor(fp)), f1 = Math.min(n - 1, f0 + 1), U = A.rec.mesh.material.uniforms;
+      U.map.value = A.rec.tex[f0]; U.map2.value = A.rec.tex[f1]; U.mt.value = f1 > f0 ? fp - f0 : 0; }
     if ((A.dir > 0 && A.pos >= 1) || (A.dir < 0 && A.pos <= 0)) {
       delete ACT[key]; HOLD.delete(A.gid);
       if (cur.id !== A.pk) { A.rec.mesh.visible = false; continue; }
@@ -736,7 +776,7 @@ async function setGroup(gid, open, quiet) {
     delete PEND[key]; HOLD.delete(gid); KEEPOPEN.delete(gid);
     if (cur.id !== pk || opened.has(gid) !== open) return;
     if (animOk(pk, gid)) {
-      const p = loadAnim(pk, gid), ar = AREC[key];
+      const p = loadAnim(pk, gid, 0), ar = AREC[key];
       const rec = ar && ar.ready ? ar : await Promise.race([p, new Promise(r => setTimeout(() => r(null), 350))]);
       if (rec && rec.ready && cur.id === pk && opened.has(gid) === open && !ACT[key] && animOk(pk, gid)) { startAnim(pk, gid, rec, open); return; }
     }
