@@ -1,0 +1,860 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Кухня Липки</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=Unbounded:wght@500;600&display=swap">
+<style>
+/* Фото-просмотр 360°: панорамы Cycles; нажатие на дверцу накладывает её отрендеренную «заплатку»; 3D-режим — отдельная страница */
+:root {
+  --bg: #e9e4dc; --panel: rgba(250, 247, 242, 0.9); --ink: #2b2723; --muted: #6e665c; --line: rgba(43, 39, 35, 0.14);
+  --gold: #a8843f; --gold-ink: #fff9ee; --scene: #d9d2c7;
+  --f-display: "Unbounded", "Golos Text", system-ui, sans-serif;
+  --f-body: "Golos Text", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #1d1b19; --panel: rgba(32, 30, 27, 0.88); --ink: #efe9e1; --muted: #a79d90; --line: rgba(239, 233, 225, 0.14);
+  --gold: #c9a35c; --gold-ink: #1d1b19; --scene: #2a2723; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #1d1b19; --panel: rgba(32, 30, 27, 0.88); --ink: #efe9e1; --muted: #a79d90; --line: rgba(239, 233, 225, 0.14);
+  --gold: #c9a35c; --gold-ink: #1d1b19; --scene: #2a2723; color-scheme: dark; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--scene); color: var(--ink); font-family: var(--f-body); overflow: hidden; }
+canvas#c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+canvas#c:active { cursor: grabbing; }
+.top { position: fixed; top: calc(10px + env(safe-area-inset-top, 0px)); left: max(16px, env(safe-area-inset-left, 0px)); right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; pointer-events: none; }
+.card { pointer-events: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 10px 14px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); max-width: 340px; }
+.card h1 { font-family: var(--f-display); font-weight: 600; font-size: 16px; margin: 0 0 3px; }
+.card p { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.btn, .chip { border: 1px solid var(--line); background: var(--panel); color: var(--ink); font: 500 13px var(--f-body); border-radius: 999px; padding: 8px 13px; cursor: pointer; white-space: nowrap;
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+.btn.link { pointer-events: auto; }
+.bottom { position: fixed; left: max(16px, env(safe-area-inset-left, 0px)); right: max(16px, env(safe-area-inset-right, 0px)); bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start; pointer-events: none; }
+.row { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; max-width: 100%; padding: 2px; pointer-events: auto; }
+.row::-webkit-scrollbar { display: none; }
+.chip[aria-pressed="true"] { border-color: var(--gold); box-shadow: inset 0 0 0 1px var(--gold); }
+.chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.chip[aria-pressed="true"] .dot { background: var(--gold); }
+.seg { display: inline-flex; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 3px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); pointer-events: auto; }
+.seg button { border: 0; background: transparent; color: var(--muted); font: 500 13px var(--f-body); padding: 7px 13px; border-radius: 999px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--gold); color: var(--gold-ink); }
+.btn:focus-visible, .chip:focus-visible, .seg button:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+#hint { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 9px 14px;
+  font-size: 13.5px; color: var(--ink); pointer-events: none; transition: opacity .4s; white-space: nowrap; }
+#boot { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; background: rgba(18,16,14,.94); transition: opacity .45s, background .3s; }
+#boot.soft { background: rgba(18,16,14,.55); }
+#boot.off { opacity: 0; pointer-events: none; }
+#boot .bx { min-width: 240px; max-width: 80vw; padding: 18px 22px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); text-align: center; }
+#boot .t { font-size: 14px; margin-bottom: 10px; } #boot .n { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; margin-bottom: 10px; }
+#boot .bar { height: 4px; border-radius: 4px; background: var(--line); overflow: hidden; } #boot .bar i { display: block; height: 100%; width: 0; background: currentColor; transition: width .15s; }
+#loading { position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); bottom: calc(14px + env(safe-area-inset-bottom, 0px)); font-size: 12px; color: var(--muted);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 6px 11px; pointer-events: none; transition: opacity .3s; }
+.spot { position: fixed; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%; border: 0; padding: 0; cursor: pointer; background: transparent; display: none; }
+.spot::before { content: ""; position: absolute; inset: 9px; border-radius: 50%; background: rgba(255, 252, 245, 0.35); border: 2px solid rgba(255, 252, 245, 0.95);
+  box-shadow: 0 2px 10px rgba(0,0,0,.25); transition: transform .15s; }
+.spot:hover::before { transform: scale(1.15); }
+.spot span { position: absolute; top: 44px; left: 50%; transform: translateX(-50%); font-size: 12px; color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.6); white-space: nowrap; pointer-events: none; }
+#toast { position: fixed; left: 50%; top: calc(64px + env(safe-area-inset-top, 0px)); transform: translateX(-50%); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 12px; padding: 8px 13px; font-size: 13.5px; pointer-events: none; opacity: 0; transition: opacity .25s; white-space: nowrap; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+#toast.on { opacity: 1; } #toast span { color: var(--muted); }
+canvas#c.hot { cursor: pointer; }
+.ibtn { pointer-events: auto; width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); color: var(--ink); display: inline-grid; place-items: center;
+  cursor: pointer; padding: 0; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); flex: none; }
+.ibtn svg { width: 18px; height: 18px; }
+.ibtn:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.card { position: relative; padding-right: 40px; }
+.card .fold { position: absolute; top: 6px; right: 6px; width: 28px; height: 28px; border: 0; background: transparent; color: var(--muted); border-radius: 50%; cursor: pointer; display: grid; place-items: center; }
+.card .fold svg { width: 16px; height: 16px; }
+#unfold { display: none; opacity: .55; width: 30px; height: 30px; }
+body.folded .card { display: none; } body.folded #unfold { display: inline-grid; }
+.tr { display: flex; gap: 8px; align-items: center; pointer-events: none; }
+/* «скрыть всё»: остаётся только эта же кнопка на своём месте, полупрозрачным глазком */
+#hideui .on { display: none; }
+body.clean #hideui .on { display: block; } body.clean #hideui .off { display: none; }
+body.clean #hideui { opacity: .45; }
+body.clean .top .card, body.clean #unfold, body.clean .top .tr > a, body.clean .bottom, body.clean #hint, body.clean #loading { visibility: hidden !important; }
+@media (max-width: 520px) { .card p { display: none; } .card h1 { font-size: 14px; margin: 0; } }
+</style>
+
+<canvas id="c" aria-label="Панорама кухни 360°: перетащите, чтобы осмотреться; нажмите на дверцу или ящик, чтобы открыть"></canvas>
+<div class="top">
+  <div class="card"><h1>Кухня, Липки</h1><p>Фото 360°. Нажмите на дверцу или ящик — откроется; в открытом ящике нажмите на внутренний. Перетащите, чтобы осмотреться; кружки на полу — другая точка.</p>
+    <button class="fold" id="fold" aria-label="Свернуть описание"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button></div>
+  <button class="ibtn" id="unfold" aria-label="Показать описание"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></button>
+  <div class="tr"><button class="ibtn" id="hideui" aria-label="Скрыть кнопки" aria-pressed="false"><svg class="off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.4 10.4 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.6 6.6A17.4 17.4 0 0 0 2 12s3.6 7 10 7a9.7 9.7 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg><svg class="on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
+</div>
+<div id="spots"></div>
+<div id="hint">Нажмите на дверцу или ящик</div>
+<div id="toast" role="status" aria-live="polite"></div>
+<div class="bottom">
+  <div class="seg" role="group" aria-label="Двери и ящики">
+    <button id="stClosed" aria-pressed="true">Закрыть всё</button><button id="stOpen" aria-pressed="false">Открыть всё</button>
+  </div>
+  <div class="seg" id="floors" role="group" aria-label="Пол"></div>
+  <div class="row" id="pts" role="group" aria-label="Точки обзора"></div>
+</div>
+<div id="loading">Загрузка…</div>
+<div id="boot" role="progressbar" aria-live="polite"><div class="bx"><div class="t" id="bootT">Загружаем кухню…</div><div class="n" id="bootN">0%</div><div class="bar"><i id="bootI"></i></div></div></div>
+
+<script type="importmap">{ "imports": { "three": "./lib/three.module.js" } }</script>
+<script type="module">
+import * as THREE from 'three';
+// точки съёмки в координатах Blender (м): x вдоль основной стены, y от стены в комнату (отрицательный), z вверх
+const PTS = [
+  { id: 'd', name: 'У острова', p: [2.30, -3.352, 1.6], look: [2.3, -0.3, 1.0] },
+  { id: 'g', name: 'У мойки', p: [2.70, -1.113, 1.6], look: [2.7, -0.2, 0.9] },
+  { id: 'h', name: 'У варочной', p: [0.81, -1.115, 1.6], look: [0.8, -0.2, 1.0] },
+  { id: 'f', name: 'У духовки', p: [4.41, -1.136, 1.6], look: [4.22, -0.5, 1.0] },
+  { id: 'e', name: 'Торец острова', p: [3.49, -2.26, 1.6], look: [1.5, -0.3, 1.2] },
+  { id: 'c', name: 'У буфета', p: [4.334, -3.299, 1.6], look: [5.1, -3.6, 1.3] },
+  { id: 'b', name: 'У холодильника', p: [0.86, -3.58, 1.6], look: [0.6, -4.6, 1.2] },
+  { id: 'a', name: 'Из гостиной', p: [2.14, -4.27, 1.6], look: [2.5, 0, 1.2] },
+];
+const CONFLICT = {};
+const LABEL = {
+  '600 у пенала': 'Ящик у пенала', '600 у пенала внутр 1': 'Внутренний ящик у пенала, верхний', '600 у пенала внутр 2': 'Внутренний ящик у пенала, нижний',
+  'Буфет HF 1': 'Буфет, подъёмник', 'Буфет HF 2': 'Буфет, подъёмник', 'Буфет верх 1': 'Буфет, верхняя дверца', 'Буфет верх 2': 'Буфет, верхняя дверца',
+  'Буфет верх 3': 'Буфет, верхняя дверца', 'Буфет верх 4': 'Буфет, верхняя дверца', 'Буфет ящик 1 верх': 'Буфет, ящик', 'Буфет ящик 1 низ': 'Буфет, нижний ящик',
+  'Буфет ящик 2 верх': 'Буфет, ящик', 'Буфет ящик 2 низ': 'Буфет, нижний ящик', 'Буфет ящик 1 верх внутр 1': 'Буфет, внутренний ящик',
+  'Верх 1 верх': 'Навесной, верхняя дверца', 'Верх 1 низ': 'Навесной, дверца', 'Верх 2 верх': 'Навесной, верхняя дверца', 'Верх 2 низ': 'Навесной, дверца',
+  'Верх 3 верх': 'Навесной, верхняя дверца', 'Верх 3 низ': 'Навесной, дверца', 'Духовка': 'Духовка', 'Мойка лев': 'Мойка, левая дверь', 'Мойка прав': 'Мойка, правая дверь',
+  'Морозильник': 'Морозильник', 'Холодильник': 'Холодильник', 'ПММ': 'Посудомойка', 'Пенал антресоль 1': 'Антресоль пенала', 'Пенал антресоль 2': 'Антресоль пенала',
+  'Пенал над духовкой': 'Шкаф над духовкой', 'Пенал ящик': 'Ящик под духовкой', 'Шкаф антресоль лев': 'Антресоль, левая', 'Шкаф антресоль прав': 'Антресоль, правая',
+  'Ящик 1 верх': 'Ящик', 'Ящик 1 низ': 'Нижний ящик', 'Ящик 2 верх': 'Ящик', 'Ящик 2 низ': 'Нижний ящик', 'Ящик 2 верх внутр 1': 'Внутренний ящик',
+  'Остров А1': 'Остров, ящик', 'Остров А2': 'Остров, ящик', 'Остров А3': 'Остров, ящик', 'Остров Б1': 'Остров, ящик', 'Остров Б2': 'Остров, ящик', 'Остров Б3': 'Остров, ящик',
+  'Остров А1 внутр 1': 'Остров, внутренний ящик', 'Остров А2 внутр 1': 'Остров, внутренний ящик', 'Остров А3 внутр 1': 'Остров, внутренний ящик',
+  'Остров Б1 внутр 1': 'Остров, внутренний ящик', 'Остров Б2 внутр 1': 'Остров, внутренний ящик', 'Остров Б3 внутр 1': 'Остров, внутренний ящик',
+  'Витрина низ': 'Витрина, нижняя дверь', 'Микроволновка': 'Микроволновка', 'Витрина верх': 'Витрина, верхняя дверь',
+};
+// Blender-направление → направление в сцене three (сфера с текстурой equirect, центр кадра = +Y Blender)
+const b2t = (d) => new THREE.Vector3(-d[1], d[2], -d[0]);
+const t2uv = (v) => { const dx = -v.z, dy = -v.x, dz = v.y, r = Math.hypot(dx, dy, dz) || 1;
+  return [0.5 + Math.atan2(dx, dy) / (2 * Math.PI), 0.5 - Math.asin(Math.max(-1, Math.min(1, dz / r))) / Math.PI]; };
+
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(70, 1, 0.1, 1000);
+const geo = new THREE.SphereGeometry(500, 96, 48); geo.scale(-1, 1, 1);
+const MAXT = renderer.capabilities.maxTextureSize;
+// 8K-панорама — на компьютере с поддержкой текстур 8192; на телефоне и слабых видеокартах — 4K
+const HI = MAXT >= 8192 && !/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) && (navigator.deviceMemory || 8) >= 4;
+const mkMat = () => new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, depthTest: false });
+const layers = [new THREE.Mesh(geo, mkMat()), new THREE.Mesh(geo, mkMat())];
+layers.forEach((m, i) => { m.renderOrder = i; scene.add(m); });
+
+const loading = document.getElementById('loading'); let pending = 0;
+const busy = (d) => { pending += d; loading.style.opacity = pending > 0 ? 1 : 0; };
+// фоновая догрузка: файлы остальных точек скачиваются заранее в память (blob), чтобы переход был без ожидания
+const PRE = new Map();                            // url → Promise<objectURL|null>
+function prefetch(src) {
+  if (!PRE.has(src)) PRE.set(src, fetch(src).then(r => r.ok ? r.blob() : null).then(b => b ? URL.createObjectURL(b) : null).catch(() => null));
+  return PRE.get(src);
+}
+async function loadImg(src) {
+  busy(1);
+  const u = PRE.has(src) ? ((await PRE.get(src)) || src) : src;
+  return new Promise((res, rej) => { const img = new Image(); img.decoding = 'async';
+    img.onload = () => { busy(-1); res(img); }; img.onerror = () => { busy(-1); rej(new Error(src)); }; img.src = u; });
+}
+// ---- декодирование картинок вне основного потока (15.11: «на точку переходишь — минуты 2 фризит») ----
+// Раньше на основном потоке: getImageData карт фасадов 8K (128 МБ на точку), масок и глубины 450 заплаток, декодирование
+// панорам всех 8 точек сразу. Теперь это делают воркеры (OffscreenCanvas), основному потоку остаётся только залить текстуру.
+const WK_SRC = `self.onmessage = async (e) => {
+  const { id, url, tex, reads } = e.data;
+  try {
+    const blob = await (await fetch(url)).blob();
+    const base = await createImageBitmap(blob, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+    const out = { id, w: base.width, h: base.height, reads: {} }, tr = [];
+    for (const name in (reads || {})) {
+      const r = reads[name], w = Math.max(1, Math.round(base.width * r.s)), h = Math.max(1, Math.round(base.height * r.s));
+      const oc = new OffscreenCanvas(w, h), c = oc.getContext('2d', { willReadFrequently: true });
+      c.imageSmoothingEnabled = false; c.drawImage(base, 0, 0, w, h);
+      const d = c.getImageData(0, 0, w, h).data, res = { w, h, c: 4, d };
+      if (r.ch === 1) { const o = new Uint8Array(w * h); for (let i = 0; i < o.length; i++) o[i] = d[i * 4]; res.d = o; res.c = 1; }
+      if (r.range) { let lo = 1, hi = 0; for (let i = 0; i < w * h; i++) { const v = (d[i * 4] + d[i * 4 + 1] / 255) / 255; if (v < 0.999) { if (v < lo) lo = v; if (v > hi) hi = v; } } res.lo = lo; res.hi = hi; }
+      out.reads[name] = res; tr.push(res.d.buffer);
+    }
+    if (tex) {
+      const opt = { imageOrientation: 'flipY', premultiplyAlpha: 'none', colorSpaceConversion: tex.cs === 'none' ? 'none' : 'default' };
+      if (tex.maxW && base.width > tex.maxW) { opt.resizeWidth = tex.maxW; opt.resizeHeight = Math.round(base.height * tex.maxW / base.width); opt.resizeQuality = 'high'; }
+      out.bmp = await createImageBitmap(tex.cs === 'none' ? base : blob, opt); tr.push(out.bmp);
+    }
+    base.close();
+    self.postMessage(out, tr);
+  } catch (err) { self.postMessage({ id, err: String(err) }); }
+};`;
+let WK = null; const WCB = {}; let wkId = 0;
+function wkInit() {
+  if (WK !== null) return WK;
+  try {
+    if (!window.Worker || !window.OffscreenCanvas || !window.createImageBitmap) throw 0;
+    const u = URL.createObjectURL(new Blob([WK_SRC], { type: 'text/javascript' }));
+    const n = Math.max(1, Math.min(3, ((navigator.hardwareConcurrency || 4) / 2) | 0));
+    WK = Array.from({ length: n }, () => { const w = new Worker(u); w.onmessage = (e) => { const cb = WCB[e.data.id]; delete WCB[e.data.id]; if (cb) cb(e.data); }; return w; });
+  } catch (e) { WK = false; }
+  return WK;
+}
+// url → { bmp (ImageBitmap, уже перевёрнут) или img (Image), reads: {имя: {w, h, c, d, lo, hi}} }
+async function decodeAsset(src, tex, reads) {
+  const u = PRE.has(src) ? ((await PRE.get(src)) || src) : src;
+  const W = wkInit();
+  if (W) {
+    busy(1);
+    try {
+      return await new Promise((res, rej) => { const id = ++wkId; WCB[id] = (d) => d.err ? rej(new Error(d.err)) : res(d); W[id % W.length].postMessage({ id, url: new URL(u, location.href).href, tex, reads }); });
+    } catch (e) { /* ниже — запасной путь */ } finally { busy(-1); }
+  }
+  const img = await loadImg(src), out = { img: tex ? img : null, reads: {} };
+  for (const name in (reads || {})) {
+    const r = reads[name], p = readPixels(img, r.s), res = { w: p.w, h: p.h, c: 4, d: p.d };
+    if (r.ch === 1) { const o = new Uint8Array(p.w * p.h); for (let i = 0; i < o.length; i++) o[i] = p.d[i * 4]; res.d = o; res.c = 1; }
+    if (r.range) { let lo = 1, hi = 0; for (let i = 0; i < p.w * p.h; i++) { const v = (p.d[i * 4] + p.d[i * 4 + 1] / 255) / 255; if (v < 0.999) { if (v < lo) lo = v; if (v > hi) hi = v; } } res.lo = lo; res.hi = hi; }
+    out.reads[name] = res;
+  }
+  return out;
+}
+const isBmp = (x) => typeof ImageBitmap !== 'undefined' && x instanceof ImageBitmap;
+function freeTex(t) { if (!t) return; t.dispose(); if (isBmp(t.image)) t.image.close(); }
+function mkTex(src) {
+  const t = new THREE.Texture(src); t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = true; if (isBmp(src)) t.flipY = false;
+  t.minFilter = THREE.LinearMipmapLinearFilter; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); t.needsUpdate = true; return t;
+}
+const cache = new Map();
+const PROG = {};                                 // доля загрузки больших панорам (по байтам)
+function fetchImg(src, key) {
+  busy(1); PROG[key] = 0;
+  return fetch(src).then(async r => {
+    if (!r.ok) throw new Error(src);
+    const total = +r.headers.get('content-length') || 0;
+    let blob;
+    if (r.body && total) {
+      const rd = r.body.getReader(), parts = []; let got = 0;
+      for (;;) { const { done, value } = await rd.read(); if (done) break; parts.push(value); got += value.length; PROG[key] = Math.min(0.99, got / total); }
+      blob = new Blob(parts);
+    } else blob = await r.blob();
+    const img = new Image(); img.decoding = 'async'; img.src = URL.createObjectURL(blob); await img.decode();
+    PROG[key] = 1; busy(-1); return img;
+  }).catch(e => { busy(-1); PROG[key] = 1; return loadImg(src); });
+}
+function loadPano(key) {
+  if (!cache.has(key)) cache.set(key, (async () => {
+    const src = 'pano/' + key + (HI ? '' : '_4k') + '.jpg';
+    if (wkInit()) {
+      busy(1); PROG[key] = 0;
+      try {                                              // скачивание с процентами → в память (PRE), декодирование — воркер
+        if (!PRE.has(src)) PRE.set(src, fetch(src).then(async r => {
+          if (!r.ok) throw new Error(src);
+          const total = +r.headers.get('content-length') || 0; let blob;
+          if (r.body && total) { const rd = r.body.getReader(), parts = []; let got = 0;
+            for (;;) { const { done, value } = await rd.read(); if (done) break; parts.push(value); got += value.length; PROG[key] = Math.min(0.99, got / total); }
+            blob = new Blob(parts); } else blob = await r.blob();
+          return URL.createObjectURL(blob);
+        }).catch(() => null));
+        const a = await decodeAsset(src, { maxW: MAXT });
+        PROG[key] = 1; return mkTex(a.bmp || a.img);
+      } finally { busy(-1); PROG[key] = 1; }
+    }
+    const img = await fetchImg(src, key); let s2 = img;
+    if (img.width > MAXT) { const cv = document.createElement('canvas'); cv.width = MAXT; cv.height = MAXT / 2; cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height); s2 = cv; }
+    return mkTex(s2);
+  })().then(t => { t.__key = key; return t; }));
+  return cache.get(key);
+}
+// в памяти держим панорамы текущей точки и двух ближайших — остальные освобождаем (8 штук по 128 МБ — слишком много)
+function trimPanos() {
+  if (!cur) return;
+  const keep = new Set(PTS.slice().sort((a, b) => Math.hypot(a.p[0] - cur.p[0], a.p[1] - cur.p[1]) - Math.hypot(b.p[0] - cur.p[0], b.p[1] - cur.p[1])).slice(0, 3).map(q => q.id + '_closed' + floor));
+  layers.forEach(m => { if (m.material.map) keep.add(m.material.map.__key); });
+  for (const [k, p] of cache) if (!keep.has(k)) { cache.delete(k); p.then(t => { if (layers.some(m => m.material.map === t)) return; freeTex(t); }).catch(() => {}); }
+}
+
+// ---- заплатки (каждая дверца отдельно) ----
+let META = null; const GBY = {};               // id группы → {id, movs, label}
+const opened = new Set();                       // id открытых групп (общие для всех точек)
+const ids = {};                                 // карта фасадов точки: {w, h, data}
+const patches = {};                             // pk_gid → {mesh, alpha, px, ready}
+const metaP = fetch('pano/parts/parts.json').then(r => r.json()).then(m => { META = m; m.groups.forEach(g => { GBY[g.id] = g; }); return m; }).catch(() => null);
+function loadIds(pk) {
+  if (!ids[pk]) ids[pk] = decodeAsset('pano/parts/' + pk + '_ids.png', null, { ids: { s: 1, ch: 1 } }).then(a => { const r = a.reads.ids; return { w: r.w, h: r.h, c: r.c, data: r.d }; }).catch(() => null);
+  return ids[pk];
+}
+// заплатка рисуется шейдером: цвет + маска из WebP, глубина (расстояние до поверхности) из *_d.png → gl_FragDepth,
+// чтобы открытая дверца одного шкафа правильно перекрывала внутренность соседнего
+const PATCH_VS = 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }';
+// плавное открывание без лишних кадров: заплатка проявляется по глубине — сначала дальнее (нутро шкафа),
+// потом ближнее (открытая дверца/ящик «выходит» на зрителя); при закрытии — в обратном порядке
+const PATCH_FS = `uniform sampler2D map; uniform sampler2D dmap; uniform float op; uniform vec2 dr; uniform float zb; varying vec2 vUv;
+void main() {
+  vec4 c = texture2D(map, vUv);
+  vec2 dd = texture2D(dmap, vUv).rg; float d = (floor(dd.r * 255.0 + 0.5) + dd.g) / 255.0;
+  float dn = d > 0.999 ? 1.0 : clamp((d - dr.x) / max(dr.y - dr.x, 1e-4), 0.0, 1.0);
+  const float S = 1.0;   // ширина «фронта» проявления: шире — меньше ряби по глубине
+  float w = clamp((op * (1.0 + S) - (1.0 - dn)) / S, 0.0, 1.0);
+  float a = c.a * w * w * (3.0 - 2.0 * w); if (a < 0.02) discard;
+  gl_FragDepth = (c.a > 0.9 ? min(d, 0.9999) : 0.99995) - zb; gl_FragColor = vec4(c.rgb, a);   // zb: при равной глубине (общая полка, кромка) выигрывает последняя открытая — без «пунктира» от z-fighting
+}`;
+function rawTex(src, nearest) {
+  const t = new THREE.Texture(src); t.colorSpace = THREE.NoColorSpace; if (isBmp(src)) t.flipY = false;
+  if (nearest) { t.minFilter = t.magFilter = THREE.NearestFilter; t.generateMipmaps = false; }
+  else { t.minFilter = THREE.LinearMipmapLinearFilter; t.generateMipmaps = true; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); }
+  t.needsUpdate = true; return t;
+}
+function readPixels(img, s) {
+  const cv = document.createElement('canvas'); cv.width = Math.max(1, Math.round(img.width * s)); cv.height = Math.max(1, Math.round(img.height * s));
+  const c = cv.getContext('2d', { willReadFrequently: true }); c.imageSmoothingEnabled = false; c.drawImage(img, 0, 0, cv.width, cv.height);
+  return { w: cv.width, h: cv.height, d: c.getImageData(0, 0, cv.width, cv.height).data };
+}
+function loadPatch(pk, gid) {
+  const key = pk + '_' + gid; if (patches[key]) return patches[key].p;
+  const info = META && META.parts[pk] && META.parts[pk][gid];
+  if (!info) return null;
+  const rec = { px: info.px, mesh: null, alpha: null, depth: null, info, texP: null };
+  rec.p = Promise.all([
+    decodeAsset('pano/parts/' + info.file, null, { alpha: { s: 0.25 } }),
+    info.depth ? decodeAsset('pano/parts/' + info.depth, null, { depth: { s: 0.5, range: true } }) : null,
+    info.pick ? decodeAsset('pano/parts/' + info.pick, null, { pick: { s: 1 } }).catch(() => null) : null,
+  ]).then(([a, b, c]) => {
+    const [W, H] = META.res, [X0, Y0, X1, Y1] = info.px;
+    const g = new THREE.SphereGeometry(490, Math.max(4, Math.ceil((X1 - X0) / W * 160)), Math.max(4, Math.ceil((Y1 - Y0) / H * 80)),
+      X0 / W * 2 * Math.PI, (X1 - X0) / W * 2 * Math.PI, Y0 / H * Math.PI, (Y1 - Y0) / H * Math.PI);
+    g.scale(-1, 1, 1);
+    const u = { map: { value: null }, dmap: { value: null }, op: { value: 0 }, dr: { value: new THREE.Vector2(0, 1) }, zb: { value: 0 } };
+    const mat = info.depth ? new THREE.ShaderMaterial({ uniforms: u, vertexShader: PATCH_VS, fragmentShader: PATCH_FS, transparent: true, depthTest: true, depthWrite: true }) : mkMat();
+    if (info.depth) Object.defineProperty(mat, 'opacity', { get: () => u.op.value, set: (v) => { u.op.value = v; }, configurable: true });
+    rec.u = u; rec.mesh = new THREE.Mesh(g, mat); rec.mesh.renderOrder = 10; rec.mesh.visible = false; scene.add(rec.mesh);
+    rec.mesh.userData.inv = !!(GBY[gid] && GBY[gid].inv);
+    if (rec.mesh.userData.inv) mat.depthTest = false;   // «внутренний закрыт»: ящик уезжает вглубь — без проверки глубины, рисуется после фасада
+    rec.alpha = a.reads.alpha;                          // маска — для попадания пальцем по открытой дверце
+    if (b) { rec.depth = b.reads.depth; if (b.reads.depth.hi > b.reads.depth.lo) u.dr.value.set(b.reads.depth.lo, b.reads.depth.hi); }
+    if (c) rec.pick = c.reads.pick;
+    return rec;
+  });
+  patches[key] = rec; return rec.p;
+}
+// текстуры заплатки (цвет + глубина): декодирование в воркере, заливка в видеокарту — по очереди
+function ensureTex(rec) {
+  if (rec.texP) return rec.texP;
+  const info = rec.info;
+  rec.texP = Promise.all([decodeAsset('pano/parts/' + info.file, { cs: 'srgb' }), info.depth ? decodeAsset('pano/parts/' + info.depth, { cs: 'none' }) : null]).then(([a, b]) => {
+    if (!rec.texP) { if (a.bmp) a.bmp.close(); if (b && b.bmp) b.bmp.close(); return rec; }   // уже освободили
+    if (info.depth) { rec.u.map.value = rawTex(a.bmp || a.img); rec.u.dmap.value = rawTex((b.bmp || b.img), true); UPQ.push(rec.u.map.value, rec.u.dmap.value); }
+    else { rec.mesh.material.map = mkTex(a.bmp || a.img); rec.mesh.material.needsUpdate = true; UPQ.push(rec.mesh.material.map); }
+    return rec;
+  });
+  return rec.texP;
+}
+function dropTex(rec) {
+  if (!rec.texP || !rec.mesh) return;
+  rec.texP = null; rec.mesh.visible = false; rec.mesh.material.opacity = 0;
+  if (rec.u) { [rec.u.map.value, rec.u.dmap.value].forEach(t => { const i = UPQ.indexOf(t); if (i >= 0) UPQ.splice(i, 1); freeTex(t); }); rec.u.map.value = rec.u.dmap.value = null; }
+  else if (rec.mesh.material.map) { freeTex(rec.mesh.material.map); rec.mesh.material.map = null; }
+}
+// текущая точка: текстуры всех заплаток готовим заранее, по одной (воркер) — чтобы открытие было без задержки
+let texQ = 0;
+async function warmTex(pk) {
+  const my = ++texQ;
+  Object.entries(patches).forEach(([k, r]) => { if (!k.startsWith(pk + '_')) dropTex(r); });   // чужие точки — из видеопамяти
+  await metaP; if (!META || !META.parts[pk]) return;
+  for (const gid of Object.keys(META.parts[pk])) {
+    if (my !== texQ || cur.id !== pk) return;
+    const rec = await loadPatch(pk, gid); if (!rec) continue;
+    await ensureTex(rec);
+    while (UPQ.length > 8) await new Promise(r => setTimeout(r, 60));
+  }
+}
+let order = 10; const LAST = {};
+function setTop(mesh) { mesh.renderOrder = ++order; const u = mesh.material.uniforms; if (u && u.zb) u.zb.value = Math.min(order, 20000) * 2e-7; }
+function fadeMesh(mesh, to, dur = (to > 0 ? 950 : 750), delay = 0) {
+  mesh.visible = true; if (to > 0) setTop(mesh);
+  for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === mesh.material) tweens.splice(i, 1);   // одна анимация на заплатку, иначе они спорят
+  tweens.push({ m: mesh.material, from: mesh.material.opacity, to, t0: performance.now() + delay, dur, end: () => { if (to === 0) mesh.visible = false; } });
+}
+const tweens = [];
+
+// ---- анимация открывания (14.11.2026): 29 кадров по каждой дверце/ящику, атлас 5 столбцов (pano/anim) ----
+// Кадры отрендерены в «чистой» сцене (открыта только эта группа и то, без чего она не открывается), поэтому играем их,
+// только если кадры не налезают на заплатки других открытых фасадов (проверка по маскам); иначе — обычное проявление.
+// Повторное нажатие во время движения разворачивает анимацию с текущего кадра; соседние фасады анимируются независимо.
+let ANIM = null; const AREC = {};
+const animP = fetch('pano/anim/anim.json').then(r => r.ok ? r.json() : null).then(j => { ANIM = j; return j; }).catch(() => null);
+const HOLD = new Set();
+const KEEPOPEN = new Set();
+const _REQ = {};
+function reqOf(x) { if (!x) return []; if (!_REQ[x.id]) _REQ[x.id] = (x.req || []).map(nm => (META.groups.find(y => !y.combo && y.movs[0] === nm) || {}).id).filter(Boolean); return _REQ[x.id]; }          // фасад закрывается, но ждёт, пока уедут внутренние — до этого показываем его открытым               // группы в движении: их заплатки (и общие с ними) не показываем, пока идут кадры
+const ACT = {};                       // pk_gid → активная анимация
+// Загрузка кадров без фризов (пользователь 15.11: «периодически фризы»): атлас режется createImageBitmap (вне основного потока),
+// маска для проверки наложения — по уменьшенной копии, текстуры заливаются в видеокарту по очереди, по нескольку мс за кадр.
+const UPQ = [];
+function upTex(t) { if (!t.__up) { renderer.initTexture(t); t.__up = true; } }
+function pumpUploads(budget) { const t0 = performance.now(); while (UPQ.length && performance.now() - t0 < budget) upTex(UPQ.shift()); }
+const nextIdle = () => new Promise(r => (window.requestIdleCallback ? requestIdleCallback(() => r(), { timeout: 300 }) : setTimeout(r, 30)));
+function loadAnim(pk, gid) {
+  const key = pk + '_' + gid; if (AREC[key]) return AREC[key].p;
+  const a = ANIM && ANIM[pk] && ANIM[pk][gid]; if (!a) return null;
+  const rec = AREC[key] = { a, ready: false };
+  rec.p = loadImg('pano/anim/' + a.file).then(async img => {
+    try { await img.decode(); } catch (e) {}
+    const [cw, ch] = a.cell, W = a.res || 2048, H = W / 2, [X0, Y0, X1, Y1] = a.px;
+    const cell = k => [(k % a.cols) * cw, Math.floor(k / a.cols) * ch];
+    let bmps = null;
+    if (window.createImageBitmap) {
+      try { bmps = await Promise.all(Array.from({ length: a.n }, (_, k) => { const [sx, sy] = cell(k); return createImageBitmap(img, sx, sy, cw, ch, { imageOrientation: 'flipY', premultiplyAlpha: 'none' }); })); }
+      catch (e) { bmps = null; }
+    }
+    rec.tex = [];
+    for (let k = 0; k < a.n; k++) {
+      let t;
+      if (bmps) { t = new THREE.Texture(bmps[k]); t.flipY = false; }
+      else { const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch; const [sx, sy] = cell(k); cv.getContext('2d').drawImage(img, sx, sy, cw, ch, 0, 0, cw, ch); t = new THREE.Texture(cv); }
+      t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; t.needsUpdate = true;
+      rec.tex.push(t); UPQ.push(t);
+      if (!bmps && k % 6 === 5) await nextIdle();
+    }
+    // объединённая маска кадров (для проверки наложения) — по копии не больше 160 px
+    const ms = Math.min(1, 160 / Math.max(cw, ch)), mw = Math.max(1, Math.round(cw * ms)), mh = Math.max(1, Math.round(ch * ms));
+    const mc = document.createElement('canvas'); mc.width = mw; mc.height = mh; const mx = mc.getContext('2d', { willReadFrequently: true });
+    const U = new Uint8Array(mw * mh);
+    for (let k = 0; k < a.n; k += 4) {
+      mx.clearRect(0, 0, mw, mh); const [sx, sy] = cell(k); mx.drawImage(img, sx, sy, cw, ch, 0, 0, mw, mh);
+      const d = mx.getImageData(0, 0, mw, mh).data; for (let i = 0; i < U.length; i++) if (d[i * 4 + 3] > 96) U[i] = 1;
+    }
+    let n = 0; for (let i = 0; i < U.length; i++) n += U[i];
+    rec.U = U; rec.Uw = mw; rec.Uh = mh; rec.Us = mw / cw; rec.Un = n / (rec.Us * rec.Us);
+    const g = new THREE.SphereGeometry(480, Math.max(4, Math.ceil((X1 - X0) / W * 160)), Math.max(4, Math.ceil((Y1 - Y0) / H * 80)),
+      X0 / W * 2 * Math.PI, (X1 - X0) / W * 2 * Math.PI, Y0 / H * Math.PI, (Y1 - Y0) / H * Math.PI);
+    g.scale(-1, 1, 1);
+    rec.mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ map: rec.tex[0], transparent: true, depthTest: false, depthWrite: false }));
+    rec.mesh.renderOrder = 1e7; rec.mesh.visible = false; scene.add(rec.mesh); rec.ready = true; return rec;
+  }).catch(() => null);
+  return rec.p;
+}
+function animFree(pk) {           // кадры других точек — из видеопамяти (на телефоне её мало)
+  for (const [k, r] of Object.entries(AREC)) {
+    if (k.startsWith(pk + '_') || !r.ready) continue;
+    r.tex.forEach(t => { t.dispose(); if (t.image && t.image.close) t.image.close(); const i = UPQ.indexOf(t); if (i >= 0) UPQ.splice(i, 1); }); r.mesh.geometry.dispose(); r.mesh.material.dispose(); scene.remove(r.mesh); delete AREC[k];
+  }
+  for (const k of Object.keys(ACT)) if (!k.startsWith(pk + '_')) { HOLD.delete(ACT[k].gid); delete ACT[k]; }
+}
+let animQ = 0;
+async function animPrefetch(pk) {
+  const my = ++animQ; animFree(pk); await animP; if (!ANIM || !ANIM[pk]) return;
+  if (!HI) return;                // телефон: кадры грузятся по первому нажатию (первое открытие — обычное проявление)
+  for (const gid of Object.keys(ANIM[pk])) { if (my !== animQ || cur.id !== pk) return; await nextIdle(); while (UPQ.length > 60 || Object.keys(ACT).length) await new Promise(r => setTimeout(r, 120)); await loadAnim(pk, gid); }
+}
+// сколько пикселей кадров анимации ложится на видимую часть заплатки другой открытой группы
+function overlapPatch(rec, prec) {
+  if (!prec || !prec.alpha) return 0;
+  const a = rec.a, AW = a.res || 2048, [X0, Y0] = a.px, k8 = 8192 / AW, sc = a.sc || 1, P = prec.alpha, [px0, py0] = prec.px, s = P.w / ((prec.px[2] - px0) || 1);
+  const q = 1 / (rec.Us * sc);              // пиксель маски → пиксели кадра анимации
+  let n = 0;
+  for (let y = 0; y < rec.Uh; y++) for (let x = 0; x < rec.Uw; x++) {
+    if (!rec.U[y * rec.Uw + x]) continue;
+    const ax = Math.floor(((((X0 + (x + 0.5) * q) * k8) % 8192) - px0) * s), ay = Math.floor(((Y0 + (y + 0.5) * q) * k8 - py0) * s);
+    if (ax < 0 || ay < 0 || ax >= P.w || ay >= P.h) continue;
+    if (P.d[(ay * P.w + ax) * 4 + 3] > 128) n += q * q * sc * sc;
+  }
+  return n;
+}
+function animOk(pk, gid) {
+  return !(floor || mode !== 'single' || !ANIM || !ANIM[pk] || !ANIM[pk][gid]);
+}
+// 15.11: раньше при наложении на открытую соседку анимация отключалась (холодильник открыт → антресоль без анимации).
+// Теперь кадры играют всегда, но если налезают на видимую заплатку другой открытой группы — рисуются ПОД ней
+// (там, где открытая соседка видна, она перед нашим фасадом).
+function animUnder(pk, gid, rec) {
+  const keep = new Set([gid, ...reqOf(GBY[gid])]);
+  for (const o of opened) {
+    if (keep.has(o) || HOLD.has(o)) continue;
+    const ids = [o]; META.groups.forEach(c => { if (c.combo && c.combo.includes(o) && !c.combo.includes(gid)) ids.push(c.id); });
+    for (const id of ids) { const pr = patches[pk + '_' + id]; if (pr && pr.mesh && pr.mesh.visible && overlapPatch(rec, pr) > Math.max(30, 0.006 * rec.Un)) return true; }
+  }
+  return false;
+}
+function hideOwn(pk, gid) {        // своя заплатка (одна или в составе общей) — убрать сразу, иначе видна «призраком» по краю кадра
+  Object.entries(patches).forEach(([k, r]) => {
+    if (!k.startsWith(pk + '_') || !r.mesh) return; const id = +k.slice(pk.length + 1);
+    if ((GBY[id].combo || [id]).includes(gid)) {
+      for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === r.mesh.material) tweens.splice(i, 1);
+      r.mesh.visible = false; r.mesh.material.opacity = 0; }
+  });
+}
+const ANIM_DUR = 1050;
+function startAnim(pk, gid, rec, open) {
+  const key = pk + '_' + gid, n = rec.tex.length;
+  let A = ACT[key];
+  if (!A) {
+    A = ACT[key] = { pk, gid, rec, pos: open ? 0 : 1 };
+    rec.mesh.material.map = rec.tex[open ? 0 : n - 1];
+    for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === rec.mesh.material) tweens.splice(i, 1);
+  }
+  for (let i = rec.tex.length - 1; i >= 0; i--) { const t = rec.tex[i], j = UPQ.indexOf(t); if (j >= 0) { UPQ.splice(j, 1); UPQ.unshift(t); } }
+  rec.mesh.renderOrder = animUnder(pk, gid, rec) ? 5 : 1e7;
+  A.dir = open ? 1 : -1; A.last = performance.now(); rec.mesh.material.opacity = 1; rec.mesh.visible = true;
+  HOLD.add(gid);
+  hideOwn(pk, gid);
+  refresh(pk, false);
+}
+function stepAnims(now) {
+  for (const [key, A] of Object.entries(ACT)) {
+    const dt = Math.min(now - A.last, 100); A.last = now;
+    A.pos = Math.max(0, Math.min(1, A.pos + A.dir * dt / ANIM_DUR));
+    const s = A.pos * A.pos * (3 - 2 * A.pos), n = A.rec.tex.length, f = Math.round(s * (n - 1));
+    if (A.rec.mesh.material.map !== A.rec.tex[f]) A.rec.mesh.material.map = A.rec.tex[f];
+    if ((A.dir > 0 && A.pos >= 1) || (A.dir < 0 && A.pos <= 0)) {
+      delete ACT[key]; HOLD.delete(A.gid);
+      if (cur.id !== A.pk) { A.rec.mesh.visible = false; continue; }
+      refresh(A.pk, false, A.gid);
+      animOut(A.rec, A.dir > 0 ? 160 : 140);
+    }
+  }
+}
+function animStopAll() { for (const [k, A] of Object.entries(ACT)) { A.rec.mesh.visible = false; delete ACT[k]; } for (const k of Object.keys(PEND)) { clearTimeout(PEND[k]); delete PEND[k]; } HOLD.clear(); KEEPOPEN.clear(); }
+function animOut(rec, ms) {      // кадр уходит, когда под ним уже нужная картинка
+  const m = rec.mesh.material;
+  for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === m) tweens.splice(i, 1);
+  tweens.push({ m, from: 1, to: 0, t0: performance.now(), dur: ms, end: () => { rec.mesh.visible = false; } });
+}
+// мешающие друг другу элементы: из проверки геометрии в Blender (parts.json → conflicts) + известные вручную
+function conflictsOf(g) {
+  const s = new Set((META.conflicts && META.conflicts[g.id]) || []);
+  (CONFLICT[g.movs[0]] || []).forEach(nm => { const o = META.groups.find(x => x.movs[0] === nm); if (o) s.add(o.id); });
+  return [...s];
+}
+async function setGroup(gid, open, quiet) {
+  const g = GBY[gid]; if (!g) return;
+  const before = new Set(opened);
+  const reqIds = (x) => (x.req || []).map(nm => (META.groups.find(y => !y.combo && y.movs[0] === nm) || {}).id).filter(Boolean);
+  if (open) {
+    conflictsOf(g).forEach(oid => { if (opened.has(oid)) { opened.delete(oid); } });   // что мешает — закрываем
+    reqIds(g).forEach(r => opened.add(r));                                                 // ящик — только при открытой двери
+    opened.add(gid);
+  } else {
+    opened.delete(gid);
+    META.groups.forEach(x => { if (reqIds(x).includes(gid)) opened.delete(x.id); });       // закрыли дверь — её ящики тоже
+  }
+  // внутренний ящик без открытого фасада не показываем: иначе после закрытия фасада (в т.ч. соседом-помехой) остаётся «призрак»
+  let changed = true;
+  while (changed) { changed = false;
+    for (const id of [...opened]) { const x = GBY[id]; if (x && !x.combo && reqIds(x).some(r => !opened.has(r))) { opened.delete(id); changed = true; } } }
+  if (!quiet) toast(g, open);
+  if (open && !quiet && !(META.parts[cur.id] || {})[gid]) toast(g, open, true);
+  const pk = cur.id, keep = new Set([gid, ...reqIds(g)]), key = pk + '_' + gid;
+  if (PEND[key]) { clearTimeout(PEND[key]); delete PEND[key]; HOLD.delete(gid); KEEPOPEN.delete(gid); }
+  if (ACT[key]) { startAnim(pk, gid, ACT[key].rec, opened.has(gid)); return; }      // нажали во время движения — разворот
+  if (quiet || g.combo) { refresh(pk, false); return; }
+  // что закрылось попутно (мешающие соседи при открытии, внутренние ящики при закрытии двери) — сначала они уезжают своей анимацией,
+  // потом движется нажатый фасад (иначе сосед пропадал, а фасад появлялся мгновенно)
+  const gone = [...before].filter(x => x !== gid && !opened.has(x));
+  let goneAnim = false;
+  for (const x of gone) {
+    const kx = pk + '_' + x, rx = AREC[kx];
+    if (ACT[kx]) { startAnim(pk, x, ACT[kx].rec, false); goneAnim = true; }
+    else if (rx && rx.ready && ANIM && ANIM[pk] && ANIM[pk][x] && !floor) { startAnim(pk, x, rx, false); goneAnim = true; }
+  }
+  const go = async () => {
+    delete PEND[key]; HOLD.delete(gid); KEEPOPEN.delete(gid);
+    if (cur.id !== pk || opened.has(gid) !== open) return;
+    if (animOk(pk, gid)) {
+      const p = loadAnim(pk, gid), ar = AREC[key];
+      const rec = ar && ar.ready ? ar : await Promise.race([p, new Promise(r => setTimeout(() => r(null), 350))]);
+      if (rec && rec.ready && cur.id === pk && opened.has(gid) === open && !ACT[key] && animOk(pk, gid)) { startAnim(pk, gid, rec, open); return; }
+    }
+    refresh(pk, false);
+  };
+  if (gone.length) {
+    if (open) HOLD.add(gid); else KEEPOPEN.add(gid);
+    refresh(pk, false);                 // соседи уезжают (или гаснут), нажатый фасад ждёт
+    PEND[key] = setTimeout(go, goneAnim ? ANIM_DUR + 60 : 700);
+  } else go();
+}
+const PEND = {};
+// что показывать в точке: открытые группы; у двустворчатых (сушка) при обеих открытых створках — общая заплатка,
+// иначе между створками осталась бы щель из закрытого кадра
+function shownSet(pk) {
+  // 14.11.2026: каждая пара соседних открытых фасадов должна быть внутри ОДНОЙ показанной заплатки (комбо) — иначе в одиночной заплатке
+  // виден торец закрытой соседки (серая полоска на Gola). Комбо могут перекрываться (13+15 и 15+17): там, где заплатка показывает
+  // чужой закрытый фасад, глубина «далеко» (cut_l6), и выигрывает та, где он открыт.
+  const S = new Set([...opened, ...KEEPOPEN].filter(x => !HOLD.has(x) && !reqOf(GBY[x]).some(r => HOLD.has(r)))), P = META.parts[pk] || {}, out = new Set();
+  const combos = META.groups.filter(g => g.combo && P[g.id] && g.combo.every(m => S.has(m))).sort((a, b) => b.combo.length - a.combo.length);
+  const pairKey = (a, b) => a < b ? a + ':' + b : b + ':' + a;
+  const need = new Set();   // соседство берём из всех комбо проекта: пара, для которой есть общая заплатка, считается соседней
+  META.groups.forEach(g => { if (!g.combo) return; for (let i = 0; i < g.combo.length; i++) for (let j = i + 1; j < g.combo.length; j++) if (S.has(g.combo[i]) && S.has(g.combo[j])) need.add(pairKey(g.combo[i], g.combo[j])); });
+  const covered = new Set(), members = new Set();
+  combos.forEach(c => {
+    const pc = []; for (let i = 0; i < c.combo.length; i++) for (let j = i + 1; j < c.combo.length; j++) { const k = pairKey(c.combo[i], c.combo[j]); if (need.has(k) && !covered.has(k)) pc.push(k); }
+    if (!pc.length) return;
+    out.add(c.id); pc.forEach(k => covered.add(k)); c.combo.forEach(m => members.add(m));
+  });
+  S.forEach(m => { if (!members.has(m)) out.add(m); });
+  return out;
+}
+function refresh(pk, instant, doneGid) {
+  Object.entries(patches).forEach(([k, r]) => { if (r.mesh && !k.startsWith(pk + '_')) { r.mesh.visible = false; r.mesh.material.opacity = 0; } });
+  if (mode !== 'single' || !META) return;
+  const want = shownSet(pk);
+  // что было видно открытым до этого нажатия (сама группа или в составе общей заплатки)
+  const before = LAST[pk] || new Set(), wasOpen = new Set();
+  before.forEach(id => { wasOpen.add(id); ((GBY[id] || {}).combo || []).forEach(m => wasOpen.add(m)); });
+  const willOpen = new Set(); want.forEach(id => { willOpen.add(id); ((GBY[id] || {}).combo || []).forEach(m => willOpen.add(m)); });
+  LAST[pk] = new Set(want);
+  opened.forEach(gid => loadPatch(pk, gid));                 // маски створок нужны для попадания пальцем
+  Object.keys(META.parts[pk] || {}).forEach(async gidS => {
+    const gid = +gidS, rec0 = patches[pk + '_' + gid];
+    if (!want.has(gid)) {
+      if (rec0 && rec0.mesh && rec0.mesh.visible && rec0.mesh.material.opacity > 0) {
+        // уходит, но остаётся открытым в составе новой общей заплатки — гасим только после того, как та проявится (иначе сосед «мигает»)
+        const stays = (GBY[gid].combo || [gid]).every(m => willOpen.has(m));
+        fadeMesh(rec0.mesh, 0, stays ? 200 : 750, stays ? 1000 : 0);
+      }
+      return;
+    }
+    let rec = await loadPatch(pk, gid);
+    if (rec) rec = await ensureTex(rec);
+    if (!rec || cur.id !== pk || mode !== 'single' || !shownSet(pk).has(gid)) return;
+    upTex(rec.u ? rec.u.map.value : rec.mesh.material.map); if (rec.u) upTex(rec.u.dmap.value);
+    if (rec.mesh.visible && rec.mesh.material.opacity >= 0.99) return;
+    // уже был открыт (был внутри общей заплатки) — показываем сразу, без проявления
+    const already = (GBY[gid].combo || [gid]).every(m => wasOpen.has(m)) || (doneGid && (GBY[gid].combo || [gid]).includes(doneGid));
+    if (instant || already) { for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].m === rec.mesh.material) tweens.splice(i, 1);
+      rec.mesh.visible = true; rec.mesh.material.opacity = 1; setTop(rec.mesh); } else fadeMesh(rec.mesh, 1);
+  });
+}
+function applyOpened(pk, instant) { refresh(pk, instant); }
+function hideAllPatches() { Object.values(patches).forEach(r => { if (r.mesh && r.mesh.visible) fadeMesh(r.mesh, 0, 300); }); }
+
+// что под пальцем: сначала открытые заплатки (верхняя первой), потом карта фасадов
+function pick(u, v) {
+  if (!META) return 0;
+  const [W, H] = META.res, x = u * W, y = v * H;
+  let best = 0, bestD = 9;
+  for (const g of META.groups) {
+    if (!g.req || !g.req.length) continue;
+    const ok = g.req.every(nm => { const d = META.groups.find(y => !y.combo && y.movs[0] === nm); return d && opened.has(d.id); });
+    if (!ok) continue;
+    const r = patches[cur.id + '_' + g.id]; if (!r || !r.px) continue;
+    const [X0, Y0, X1, Y1] = r.px; if (x < X0 || x >= X1 || y < Y0 || y >= Y1) continue;
+    const fx = (x - X0) / (X1 - X0), fy = (y - Y0) / (Y1 - Y0);
+    if (opened.has(g.id) && r.alpha) { if (r.alpha.d[(Math.floor(fy * r.alpha.h) * r.alpha.w + Math.floor(fx * r.alpha.w)) * 4 + 3] > 140) return g.id; continue; }
+    if (r.pick && r.pick.d[(Math.floor(fy * r.pick.h) * r.pick.w + Math.floor(fx * r.pick.w)) * 4] > 127) return g.id;
+  }
+  for (const [k, r] of Object.entries(patches)) {
+    if (!k.startsWith(cur.id + '_') || !r.alpha || !opened.has(+k.split('_')[1])) continue;
+    const [X0, Y0, X1, Y1] = r.px; if (x < X0 || x >= X1 || y < Y0 || y >= Y1) continue;
+    const fx = (x - X0) / (X1 - X0), fy = (y - Y0) / (Y1 - Y0);
+    const ax = Math.floor(fx * r.alpha.w), ay = Math.floor(fy * r.alpha.h);
+    if (r.alpha.d[(ay * r.alpha.w + ax) * 4 + 3] <= 140) continue;
+    let d = 1 - r.mesh.renderOrder * 1e-4;                 // без глубины — по порядку открытия
+    if (r.depth) { const i = (Math.floor(fy * r.depth.h) * r.depth.w + Math.floor(fx * r.depth.w)) * 4; d = (r.depth.d[i] + r.depth.d[i + 1] / 255) / 255; }
+    if (d < bestD) { bestD = d; best = +k.split('_')[1]; }
+  }
+  if (best) return best;
+  const m = idsNow; if (!m) return 0;
+  const ix = Math.min(m.w - 1, Math.floor(u * m.w)), iy = Math.min(m.h - 1, Math.floor(v * m.h));
+  return Math.round(m.data[(iy * m.w + ix) * (m.c || 4)] / ((META && META.idk) || 4));
+}
+let idsNow = null;
+const nameOf = (g) => (g.combo ? g.label : (LABEL[g.movs[0]] || g.label));
+const toastEl = document.getElementById('toast'); let toastT = 0;
+function toast(g, open, noPatch) {
+  toastEl.innerHTML = '<b>' + nameOf(g) + '</b> <span>' + (noPatch ? '— отсюда не видно, откройте в другой точке' : ((open ^ !!g.inv) ? 'открыт' : 'закрыт')) + '</span>';
+  toastEl.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove('on'), 1600);
+}
+
+// ---- панорамы, точки, режимы ----
+let cur = PTS[0], mode = 'single', top = 0, fade = null; let floor = '';
+let lon = 0, lat = 0, fov = 70;
+function aimAt(pt) {
+  const d = b2t([pt.look[0] - pt.p[0], pt.look[1] - pt.p[1], pt.look[2] - pt.p[2]]).normalize();
+  lon = Math.atan2(d.z, d.x); lat = Math.asin(d.y);
+}
+// ---- загрузка точки с процентами: панорама + карта фасадов + все заплатки, только потом показ ----
+const bootEl = document.getElementById('boot'), bootT = document.getElementById('bootT'), bootN = document.getElementById('bootN'), bootI = document.getElementById('bootI');
+const READY = new Set(); let booted = false;
+function setBoot(f) { const p = Math.max(0, Math.min(100, Math.floor(f * 100))); bootN.textContent = p + '%'; bootI.style.width = p + '%'; }
+async function preparePoint(pt, silent) {
+  const key = pt.id + '_closed' + floor;
+  if (READY.has(key)) return;
+  if (PREP[key]) {
+    if (silent) { await PREP[key]; return; }
+    showBootSoon(pt); const iv = setInterval(() => setBoot(PREPF[key] ? PREPF[key]() : 0), 100);
+    await PREP[key]; clearInterval(iv); setBoot(1); clearTimeout(bootTimer); setTimeout(() => bootEl.classList.add('off'), 150); return;
+  }
+  let res; PREP[key] = new Promise(r => { res = r; });
+  if (!silent) showBootSoon(pt);
+  await metaP;
+  const gids = META && META.parts[pt.id] ? Object.keys(META.parts[pt.id]) : [];
+  let done = 0; const tot = gids.length + 1;
+  const frac = () => 0.55 * (PROG[key] || 0) + 0.45 * done / tot; PREPF[key] = frac;
+  const iv = setInterval(() => { if (!silent) setBoot(frac()); }, 100);
+  const pr = [silent ? prefetch('pano/' + key + (HI ? '' : '_4k') + '.jpg') : loadPano(key), loadIds(pt.id).then(() => { done++; })];
+  gids.forEach(g => { const p = loadPatch(pt.id, g); if (p) pr.push(p.then(() => { done++; }, () => { done++; })); else done++; });
+  await Promise.allSettled(pr); clearInterval(iv);
+  READY.add(key); booted = true; res();
+  if (!silent) { setBoot(1); clearTimeout(bootTimer); setTimeout(() => bootEl.classList.add('off'), 150); }
+}
+const PREP = {}, PREPF = {}; let bootTimer = 0;
+// экран загрузки — сразу при первом входе, при переходах — только если точка ещё не готова через 250 мс
+function showBootSoon(pt) {
+  const on = () => { bootT.textContent = booted ? ('Загружаем: ' + pt.name + '…') : 'Загружаем кухню…';
+    bootEl.classList.toggle('soft', booted); bootEl.classList.remove('off'); };
+  clearTimeout(bootTimer);
+  if (!booted) { setBoot(0); on(); } else bootTimer = setTimeout(on, 250);
+}
+// после первой точки: остальные — по удалённости. На компьютере готовим целиком (текстуры в видеопамяти),
+// на телефоне только скачиваем файлы в память, чтобы не упереться в видеопамять
+let warmStarted = false;
+async function warmAll() {
+  if (warmStarted) return; warmStarted = true;
+  await metaP; if (!META) return;
+  const full = HI || (navigator.deviceMemory || 4) >= 8;
+  const rest = PTS.filter(q => q !== cur).sort((a, b) => Math.hypot(a.p[0] - cur.p[0], a.p[1] - cur.p[1]) - Math.hypot(b.p[0] - cur.p[0], b.p[1] - cur.p[1]));
+  for (const q of rest) {
+    const urls = ['pano/parts/' + q.id + '_ids.png'];
+    Object.values(META.parts[q.id] || {}).forEach(i => { urls.push('pano/parts/' + i.file); if (i.depth) urls.push('pano/parts/' + i.depth); if (i.pick) urls.push('pano/parts/' + i.pick); });
+    for (let k = 0; k < urls.length; k += 6) await Promise.all(urls.slice(k, k + 6).map(prefetch));
+    if (full) await preparePoint(q, true);
+  }
+}
+async function show(pt, md, keepView) {
+  await preparePoint(pt);
+  const tex = await loadPano(pt.id + '_closed' + floor);
+  upTex(tex);
+  const next = 1 - top, m = layers[next];
+  m.material.map = tex; m.material.needsUpdate = true; m.material.opacity = 0; m.renderOrder = 2; layers[top].renderOrder = 1;
+  if (!keepView) aimAt(pt);
+  const samePt = pt === cur;
+  fade = { m, from: layers[top], t0: performance.now(), dur: keepView ? 450 : 600 };
+  top = next; cur = pt; mode = md; buildSpots(); ui();
+  idsNow = null; loadIds(pt.id).then(x => { if (cur === pt) idsNow = x; });
+  if (md === 'single') applyOpened(pt.id, !samePt); else hideAllPatches();
+  setTimeout(() => {                                   // фоновая подгрузка
+    metaP.then(() => { if (META && META.parts[pt.id]) Object.keys(META.parts[pt.id]).forEach(gid => loadPatch(pt.id, gid)); });
+    trimPanos();                                     // ближайшие две точки — заранее (воркер), остальные — только файлы
+    PTS.slice().sort((a, b) => Math.hypot(a.p[0] - pt.p[0], a.p[1] - pt.p[1]) - Math.hypot(b.p[0] - pt.p[0], b.p[1] - pt.p[1])).slice(1, 3).forEach(q => loadPano(q.id + '_closed' + floor));
+    warmTex(pt.id);
+    warmAll();
+  }, 400);
+  setTimeout(() => { if (cur === pt) animPrefetch(pt.id); }, 2500);
+}
+const ptsEl = document.getElementById('pts');
+PTS.forEach(pt => {
+  const b = document.createElement('button'); b.className = 'chip'; b.innerHTML = '<span class="dot"></span>' + pt.name;
+  b.onclick = () => { if (pt !== cur) show(pt, mode, false); }; pt.btn = b; ptsEl.appendChild(b);
+});
+const stC = document.getElementById('stClosed'), stO = document.getElementById('stOpen');
+stC.onclick = () => { animStopAll(); opened.clear(); hideAllPatches(); ui(); };
+stO.onclick = () => { if (!META) return; animStopAll(); opened.clear(); META.groups.forEach(g => { if (!g.combo && !g.inv) opened.add(g.id); }); refresh(cur.id, false); ui(); };
+function ui() {
+  PTS.forEach(p => p.btn.setAttribute('aria-pressed', p === cur));
+  const nAll = META ? META.groups.filter(g => !g.combo && !g.inv).length : -1; stO.setAttribute('aria-pressed', opened.size === nAll); stC.setAttribute('aria-pressed', opened.size === 0);
+}
+
+// кружки-переходы на полу
+const spotsEl = document.getElementById('spots'); let spots = [];
+function buildSpots() {
+  spotsEl.innerHTML = ''; spots = [];
+  PTS.forEach(q => {
+    if (q === cur) return;
+    const d = b2t([q.p[0] - cur.p[0], q.p[1] - cur.p[1], 0.02 - cur.p[2]]).normalize().multiplyScalar(400);
+    const el = document.createElement('button'); el.className = 'spot'; el.setAttribute('aria-label', 'Перейти: ' + q.name);
+    el.innerHTML = '<span>' + q.name + '</span>'; el.onclick = () => show(q, mode, false);
+    spotsEl.appendChild(el); spots.push({ el, v: d });
+  });
+}
+
+// ---- управление: перетаскивание, щипок, нажатие ----
+const hint = document.getElementById('hint');
+let drag = null; const ptrs = new Map(); let pinch0 = 0, fov0 = 70, tap = null;
+const dirAt = (cx, cy) => new THREE.Vector3((cx / innerWidth) * 2 - 1, -(cy / innerHeight) * 2 + 1, 0.5).unproject(camera).normalize();
+canvas.addEventListener('pointerdown', e => {
+  canvas.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+  if (ptrs.size === 1) { drag = { x: e.clientX, y: e.clientY, lon, lat }; tap = { x: e.clientX, y: e.clientY, t: performance.now() }; }
+  if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch0 = Math.hypot(a[0] - b[0], a[1] - b[1]); fov0 = fov; drag = null; tap = null; }
+  hint.style.opacity = 0;
+});
+canvas.addEventListener('pointermove', e => {
+  if (!ptrs.has(e.pointerId)) {                       // наведение мышью: подсветить курсором кликабельное
+    if (e.pointerType === 'mouse' && mode === 'single') { const [u, v] = t2uv(dirAt(e.clientX, e.clientY)); canvas.classList.toggle('hot', pick(u, v) > 0); }
+    return;
+  }
+  ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+  if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; const d = Math.hypot(a[0] - b[0], a[1] - b[1]); fov = THREE.MathUtils.clamp(fov0 * pinch0 / d, 30, 95); return; }
+  if (!drag) return;
+  if (tap && Math.hypot(e.clientX - tap.x, e.clientY - tap.y) > 8) tap = null;
+  const k = (fov / 70) * 0.0045;
+  lon = drag.lon - (e.clientX - drag.x) * k;
+  lat = THREE.MathUtils.clamp(drag.lat + (e.clientY - drag.y) * k, -1.45, 1.45);
+});
+const up = e => {
+  ptrs.delete(e.pointerId);
+  if (ptrs.size === 0) {
+    if (tap && e.type === 'pointerup' && performance.now() - tap.t < 600) onTap(e.clientX, e.clientY);
+    drag = null; tap = null;
+  }
+};
+canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel', up);
+function onTap(cx, cy) {
+  const [u, v] = t2uv(dirAt(cx, cy)); const gid = pick(u, v);
+  if (!gid) return;
+  if (mode === 'all') { toastEl.innerHTML = '<span>Нажмите «Закрыть всё», чтобы открывать по одной</span>'; toastEl.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove('on'), 1800); return; }
+  setGroup(gid, !opened.has(gid)).then(ui); ui();
+}
+canvas.addEventListener('wheel', e => { e.preventDefault(); fov = THREE.MathUtils.clamp(fov * Math.exp(e.deltaY * 0.0012), 30, 95); hint.style.opacity = 0; }, { passive: false });
+addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft') lon -= 0.08; if (e.key === 'ArrowRight') lon += 0.08;
+  if (e.key === 'ArrowUp') lat = Math.min(1.45, lat + 0.06); if (e.key === 'ArrowDown') lat = Math.max(-1.45, lat - 0.06);
+});
+function resize() { const w = innerWidth, h = innerHeight; renderer.setSize(w, h, false); camera.aspect = w / h; if (w < h) fov = Math.max(fov, 80); }
+addEventListener('resize', resize); resize();
+
+const tmp = new THREE.Vector3();
+function frame(now) {
+  if (fade) {
+    const k = Math.min(1, (now - fade.t0) / fade.dur); fade.m.material.opacity = k * k * (3 - 2 * k);
+    if (k >= 1) { fade.from.material.opacity = 0; fade.m.material.opacity = 1; fade = null; }
+  }
+  stepAnims(now);
+  pumpUploads(Object.keys(ACT).length ? 2 : 5);
+  for (let i = tweens.length - 1; i >= 0; i--) {
+    const t = tweens[i], k = Math.max(0, Math.min(1, (now - t.t0) / t.dur)), s = k * k * (3 - 2 * k);
+    t.m.opacity = t.from + (t.to - t.from) * s; if (k >= 1) { tweens.splice(i, 1); t.end && t.end(); }
+  }
+  camera.fov = fov; camera.updateProjectionMatrix();
+  camera.lookAt(Math.cos(lat) * Math.cos(lon), Math.sin(lat), Math.cos(lat) * Math.sin(lon));
+  renderer.render(scene, camera);
+  const w = innerWidth, h = innerHeight;
+  for (const s of spots) {
+    tmp.copy(s.v).project(camera);
+    const vis = tmp.z < 1 && Math.abs(tmp.x) < 1.1 && Math.abs(tmp.y) < 1.1;
+    s.el.style.display = vis ? 'block' : 'none';
+    if (vis) { s.el.style.left = ((tmp.x + 1) / 2 * w) + 'px'; s.el.style.top = ((1 - tmp.y) / 2 * h) + 'px'; }
+  }
+  requestAnimationFrame(frame);
+}
+// свернуть описание / скрыть все кнопки (запоминается в этом браузере)
+const store = { get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} } };
+if (store.get('lipki_fold') === '1') document.body.classList.add('folded');
+document.getElementById('fold').onclick = () => { document.body.classList.add('folded'); store.set('lipki_fold', '1'); };
+document.getElementById('unfold').onclick = () => { document.body.classList.remove('folded'); store.set('lipki_fold', '0'); };
+const hideBtn = document.getElementById('hideui');
+hideBtn.onclick = () => { const c = document.body.classList.toggle('clean'); hideBtn.setAttribute('aria-pressed', c); hideBtn.setAttribute('aria-label', c ? 'Показать кнопки' : 'Скрыть кнопки'); };
+window.__pano = { pick, setGroup, opened, patches, shownSet, AREC, ACT, HOLD, KEEPOPEN, loadAnim, get ANIM() { return ANIM; }, get META() { return META; }, get cur() { return cur; }, t2uv, dirAt, aim(x, y, z, f) { aimAt({ p: cur.p, look: [x, y, z] }); if (f) fov = f; } };
+const floorsEl = document.getElementById('floors');
+function buildFloors() {
+  const F = (META && META.floors) || []; floorsEl.innerHTML = ''; floorsEl.style.display = F.length > 1 ? '' : 'none';
+  const lab = document.createElement('span'); lab.textContent = 'Пол'; lab.style.cssText = 'font-size:12.5px;color:var(--muted);padding:7px 6px 7px 10px'; floorsEl.appendChild(lab);
+  F.forEach(([suf, name]) => {
+    const b = document.createElement('button'); b.textContent = name; b.setAttribute('aria-pressed', suf === floor);
+    b.onclick = () => { if (suf === floor) return; floor = suf; store.set('lipki_floor', suf); buildFloors(); show(cur, mode, true); };
+    floorsEl.appendChild(b);
+  });
+}
+metaP.then(() => { const sv = store.get('lipki_floor'); if (sv !== null && META && (META.floors || []).some(f => f[0] === sv)) floor = sv; buildFloors(); })
+  .then(() => show(PTS[0], 'single', false)).then(() => setTimeout(() => hint.style.opacity = 0, 3500));
+requestAnimationFrame(frame);
+</script>
