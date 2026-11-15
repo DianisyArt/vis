@@ -161,67 +161,8 @@ async function loadImg(src) {
   return new Promise((res, rej) => { const img = new Image(); img.decoding = 'async';
     img.onload = () => { busy(-1); res(img); }; img.onerror = () => { busy(-1); rej(new Error(src)); }; img.src = u; });
 }
-// ---- декодирование картинок вне основного потока (15.11: «на точку переходишь — минуты 2 фризит») ----
-// Раньше на основном потоке: getImageData карт фасадов 8K (128 МБ на точку), масок и глубины 450 заплаток, декодирование
-// панорам всех 8 точек сразу. Теперь это делают воркеры (OffscreenCanvas), основному потоку остаётся только залить текстуру.
-const WK_SRC = `self.onmessage = async (e) => {
-  const { id, url, tex, reads } = e.data;
-  try {
-    const blob = await (await fetch(url)).blob();
-    const base = await createImageBitmap(blob, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
-    const out = { id, w: base.width, h: base.height, reads: {} }, tr = [];
-    for (const name in (reads || {})) {
-      const r = reads[name], w = Math.max(1, Math.round(base.width * r.s)), h = Math.max(1, Math.round(base.height * r.s));
-      const oc = new OffscreenCanvas(w, h), c = oc.getContext('2d', { willReadFrequently: true });
-      c.imageSmoothingEnabled = false; c.drawImage(base, 0, 0, w, h);
-      const d = c.getImageData(0, 0, w, h).data, res = { w, h, c: 4, d };
-      if (r.ch === 1) { const o = new Uint8Array(w * h); for (let i = 0; i < o.length; i++) o[i] = d[i * 4]; res.d = o; res.c = 1; }
-      if (r.range) { let lo = 1, hi = 0; for (let i = 0; i < w * h; i++) { const v = (d[i * 4] + d[i * 4 + 1] / 255) / 255; if (v < 0.999) { if (v < lo) lo = v; if (v > hi) hi = v; } } res.lo = lo; res.hi = hi; }
-      out.reads[name] = res; tr.push(res.d.buffer);
-    }
-    if (tex) {
-      const opt = { imageOrientation: 'flipY', premultiplyAlpha: 'none', colorSpaceConversion: tex.cs === 'none' ? 'none' : 'default' };
-      if (tex.maxW && base.width > tex.maxW) { opt.resizeWidth = tex.maxW; opt.resizeHeight = Math.round(base.height * tex.maxW / base.width); opt.resizeQuality = 'high'; }
-      out.bmp = await createImageBitmap(tex.cs === 'none' ? base : blob, opt); tr.push(out.bmp);
-    }
-    base.close();
-    self.postMessage(out, tr);
-  } catch (err) { self.postMessage({ id, err: String(err) }); }
-};`;
-let WK = null; const WCB = {}; let wkId = 0;
-function wkInit() {
-  if (WK !== null) return WK;
-  try {
-    if (!window.Worker || !window.OffscreenCanvas || !window.createImageBitmap) throw 0;
-    const u = URL.createObjectURL(new Blob([WK_SRC], { type: 'text/javascript' }));
-    const n = Math.max(1, Math.min(3, ((navigator.hardwareConcurrency || 4) / 2) | 0));
-    WK = Array.from({ length: n }, () => { const w = new Worker(u); w.onmessage = (e) => { const cb = WCB[e.data.id]; delete WCB[e.data.id]; if (cb) cb(e.data); }; return w; });
-  } catch (e) { WK = false; }
-  return WK;
-}
-// url → { bmp (ImageBitmap, уже перевёрнут) или img (Image), reads: {имя: {w, h, c, d, lo, hi}} }
-async function decodeAsset(src, tex, reads) {
-  const u = PRE.has(src) ? ((await PRE.get(src)) || src) : src;
-  const W = wkInit();
-  if (W) {
-    busy(1);
-    try {
-      return await new Promise((res, rej) => { const id = ++wkId; WCB[id] = (d) => d.err ? rej(new Error(d.err)) : res(d); W[id % W.length].postMessage({ id, url: new URL(u, location.href).href, tex, reads }); });
-    } catch (e) { /* ниже — запасной путь */ } finally { busy(-1); }
-  }
-  const img = await loadImg(src), out = { img: tex ? img : null, reads: {} };
-  for (const name in (reads || {})) {
-    const r = reads[name], p = readPixels(img, r.s), res = { w: p.w, h: p.h, c: 4, d: p.d };
-    if (r.ch === 1) { const o = new Uint8Array(p.w * p.h); for (let i = 0; i < o.length; i++) o[i] = p.d[i * 4]; res.d = o; res.c = 1; }
-    if (r.range) { let lo = 1, hi = 0; for (let i = 0; i < p.w * p.h; i++) { const v = (p.d[i * 4] + p.d[i * 4 + 1] / 255) / 255; if (v < 0.999) { if (v < lo) lo = v; if (v > hi) hi = v; } } res.lo = lo; res.hi = hi; }
-    out.reads[name] = res;
-  }
-  return out;
-}
-const isBmp = (x) => typeof ImageBitmap !== 'undefined' && x instanceof ImageBitmap;
-function freeTex(t) { if (!t) return; t.dispose(); if (isBmp(t.image)) t.image.close(); }
 function mkTex(src) {
-  const t = new THREE.Texture(src); t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = true; if (isBmp(src)) t.flipY = false;
+  const t = new THREE.Texture(src); t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = true;
   t.minFilter = THREE.LinearMipmapLinearFilter; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); t.needsUpdate = true; return t;
 }
 const cache = new Map();
@@ -242,35 +183,12 @@ function fetchImg(src, key) {
   }).catch(e => { busy(-1); PROG[key] = 1; return loadImg(src); });
 }
 function loadPano(key) {
-  if (!cache.has(key)) cache.set(key, (async () => {
-    const src = 'pano/' + key + (HI ? '' : '_4k') + '.jpg';
-    if (wkInit()) {
-      busy(1); PROG[key] = 0;
-      try {                                              // скачивание с процентами → в память (PRE), декодирование — воркер
-        if (!PRE.has(src)) PRE.set(src, fetch(src).then(async r => {
-          if (!r.ok) throw new Error(src);
-          const total = +r.headers.get('content-length') || 0; let blob;
-          if (r.body && total) { const rd = r.body.getReader(), parts = []; let got = 0;
-            for (;;) { const { done, value } = await rd.read(); if (done) break; parts.push(value); got += value.length; PROG[key] = Math.min(0.99, got / total); }
-            blob = new Blob(parts); } else blob = await r.blob();
-          return URL.createObjectURL(blob);
-        }).catch(() => null));
-        const a = await decodeAsset(src, { maxW: MAXT });
-        PROG[key] = 1; return mkTex(a.bmp || a.img);
-      } finally { busy(-1); PROG[key] = 1; }
-    }
-    const img = await fetchImg(src, key); let s2 = img;
-    if (img.width > MAXT) { const cv = document.createElement('canvas'); cv.width = MAXT; cv.height = MAXT / 2; cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height); s2 = cv; }
-    return mkTex(s2);
-  })().then(t => { t.__key = key; return t; }));
+  if (!cache.has(key)) cache.set(key, fetchImg('pano/' + key + (HI ? '' : '_4k') + '.jpg', key).then(img => {
+    let src = img;
+    if (img.width > MAXT) { const cv = document.createElement('canvas'); cv.width = MAXT; cv.height = MAXT / 2; cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height); src = cv; }
+    return mkTex(src);
+  }));
   return cache.get(key);
-}
-// в памяти держим панорамы текущей точки и двух ближайших — остальные освобождаем (8 штук по 128 МБ — слишком много)
-function trimPanos() {
-  if (!cur) return;
-  const keep = new Set(PTS.slice().sort((a, b) => Math.hypot(a.p[0] - cur.p[0], a.p[1] - cur.p[1]) - Math.hypot(b.p[0] - cur.p[0], b.p[1] - cur.p[1])).slice(0, 3).map(q => q.id + '_closed' + floor));
-  layers.forEach(m => { if (m.material.map) keep.add(m.material.map.__key); });
-  for (const [k, p] of cache) if (!keep.has(k)) { cache.delete(k); p.then(t => { if (layers.some(m => m.material.map === t)) return; freeTex(t); }).catch(() => {}); }
 }
 
 // ---- заплатки (каждая дверца отдельно) ----
@@ -280,7 +198,10 @@ const ids = {};                                 // карта фасадов т�
 const patches = {};                             // pk_gid → {mesh, alpha, px, ready}
 const metaP = fetch('pano/parts/parts.json').then(r => r.json()).then(m => { META = m; m.groups.forEach(g => { GBY[g.id] = g; }); return m; }).catch(() => null);
 function loadIds(pk) {
-  if (!ids[pk]) ids[pk] = decodeAsset('pano/parts/' + pk + '_ids.png', null, { ids: { s: 1, ch: 1 } }).then(a => { const r = a.reads.ids; return { w: r.w, h: r.h, c: r.c, data: r.d }; }).catch(() => null);
+  if (!ids[pk]) ids[pk] = loadImg('pano/parts/' + pk + '_ids.png').then(img => {
+    const cv = document.createElement('canvas'); cv.width = img.width; cv.height = img.height; const c = cv.getContext('2d', { willReadFrequently: true });
+    c.drawImage(img, 0, 0); return { w: img.width, h: img.height, data: c.getImageData(0, 0, img.width, img.height).data };
+  }).catch(() => null);
   return ids[pk];
 }
 // заплатка рисуется шейдером: цвет + маска из WebP, глубина (расстояние до поверхности) из *_d.png → gl_FragDepth,
@@ -299,7 +220,7 @@ void main() {
   gl_FragDepth = (c.a > 0.9 ? min(d, 0.9999) : 0.99995) - zb; gl_FragColor = vec4(c.rgb, a);   // zb: при равной глубине (общая полка, кромка) выигрывает последняя открытая — без «пунктира» от z-fighting
 }`;
 function rawTex(src, nearest) {
-  const t = new THREE.Texture(src); t.colorSpace = THREE.NoColorSpace; if (isBmp(src)) t.flipY = false;
+  const t = new THREE.Texture(src); t.colorSpace = THREE.NoColorSpace;
   if (nearest) { t.minFilter = t.magFilter = THREE.NearestFilter; t.generateMipmaps = false; }
   else { t.minFilter = THREE.LinearMipmapLinearFilter; t.generateMipmaps = true; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); }
   t.needsUpdate = true; return t;
@@ -313,59 +234,30 @@ function loadPatch(pk, gid) {
   const key = pk + '_' + gid; if (patches[key]) return patches[key].p;
   const info = META && META.parts[pk] && META.parts[pk][gid];
   if (!info) return null;
-  const rec = { px: info.px, mesh: null, alpha: null, depth: null, info, texP: null };
-  rec.p = Promise.all([
-    decodeAsset('pano/parts/' + info.file, null, { alpha: { s: 0.25 } }),
-    info.depth ? decodeAsset('pano/parts/' + info.depth, null, { depth: { s: 0.5, range: true } }) : null,
-    info.pick ? decodeAsset('pano/parts/' + info.pick, null, { pick: { s: 1 } }).catch(() => null) : null,
-  ]).then(([a, b, c]) => {
+  const rec = { px: info.px, mesh: null, alpha: null, depth: null };
+  rec.p = Promise.all([loadImg('pano/parts/' + info.file), info.depth ? loadImg('pano/parts/' + info.depth) : null]).then(async ([img, dimg]) => {
     const [W, H] = META.res, [X0, Y0, X1, Y1] = info.px;
     const g = new THREE.SphereGeometry(490, Math.max(4, Math.ceil((X1 - X0) / W * 160)), Math.max(4, Math.ceil((Y1 - Y0) / H * 80)),
       X0 / W * 2 * Math.PI, (X1 - X0) / W * 2 * Math.PI, Y0 / H * Math.PI, (Y1 - Y0) / H * Math.PI);
     g.scale(-1, 1, 1);
-    const u = { map: { value: null }, dmap: { value: null }, op: { value: 0 }, dr: { value: new THREE.Vector2(0, 1) }, zb: { value: 0 } };
-    const mat = info.depth ? new THREE.ShaderMaterial({ uniforms: u, vertexShader: PATCH_VS, fragmentShader: PATCH_FS, transparent: true, depthTest: true, depthWrite: true }) : mkMat();
-    if (info.depth) Object.defineProperty(mat, 'opacity', { get: () => u.op.value, set: (v) => { u.op.value = v; }, configurable: true });
-    rec.u = u; rec.mesh = new THREE.Mesh(g, mat); rec.mesh.renderOrder = 10; rec.mesh.visible = false; scene.add(rec.mesh);
+    const u = { map: { value: rawTex(img) }, dmap: { value: dimg ? rawTex(dimg, true) : null }, op: { value: 0 }, dr: { value: new THREE.Vector2(0, 1) }, zb: { value: 0 } };
+    const mat = dimg ? new THREE.ShaderMaterial({ uniforms: u, vertexShader: PATCH_VS, fragmentShader: PATCH_FS, transparent: true, depthTest: true, depthWrite: true })
+                     : Object.assign(mkMat(), { map: mkTex(img) });
+    if (dimg) Object.defineProperty(mat, 'opacity', { get: () => u.op.value, set: (v) => { u.op.value = v; }, configurable: true });
+    rec.mesh = new THREE.Mesh(g, mat); rec.mesh.renderOrder = 10; rec.mesh.visible = false; scene.add(rec.mesh);
     rec.mesh.userData.inv = !!(GBY[gid] && GBY[gid].inv);
-    if (rec.mesh.userData.inv) mat.depthTest = false;   // «внутренний закрыт»: ящик уезжает вглубь — без проверки глубины, рисуется после фасада
-    rec.alpha = a.reads.alpha;                          // маска — для попадания пальцем по открытой дверце
-    if (b) { rec.depth = b.reads.depth; if (b.reads.depth.hi > b.reads.depth.lo) u.dr.value.set(b.reads.depth.lo, b.reads.depth.hi); }
-    if (c) rec.pick = c.reads.pick;
+    if (rec.mesh.userData.inv) mat.depthTest = false;   // без проверки глубины: там, где ящик уехал, видно пол/стену «далеко» — они проигрывали выдвинутому ящику даже со сдвигом zb; рисуется после фасада (renderOrder), глубину пишет как обычно   // «внутренний закрыт»: ящик уезжает ВГЛУБЬ — заплатка должна перекрыть выдвинутый ящик из заплатки фасада, хотя он ближе по глубине
+    rec.alpha = readPixels(img, 0.25);                  // маска — для попадания пальцем по открытой дверце
+    if (dimg) {
+      rec.depth = readPixels(dimg, 0.5);
+      let lo = 1, hi = 0; const D = rec.depth.d;          // диапазон глубины заплатки (без «далеко»-каймы)
+      for (let i = 0; i < D.length; i += 4) { const v = (D[i] + D[i + 1] / 255) / 255; if (v < 0.999) { if (v < lo) lo = v; if (v > hi) hi = v; } }
+      if (hi > lo) u.dr.value.set(lo, hi);
+    }  // глубина в полном разрешении, для пальца хватает половины        // глубина — кто ближе, тот и под пальцем
+    if (info.pick) { try { rec.pick = readPixels(await loadImg('pano/parts/' + info.pick), 1); } catch (e) {} }
     return rec;
   });
   patches[key] = rec; return rec.p;
-}
-// текстуры заплатки (цвет + глубина): декодирование в воркере, заливка в видеокарту — по очереди
-function ensureTex(rec) {
-  if (rec.texP) return rec.texP;
-  const info = rec.info;
-  rec.texP = Promise.all([decodeAsset('pano/parts/' + info.file, { cs: 'srgb' }), info.depth ? decodeAsset('pano/parts/' + info.depth, { cs: 'none' }) : null]).then(([a, b]) => {
-    if (!rec.texP) { if (a.bmp) a.bmp.close(); if (b && b.bmp) b.bmp.close(); return rec; }   // уже освободили
-    if (info.depth) { rec.u.map.value = rawTex(a.bmp || a.img); rec.u.dmap.value = rawTex((b.bmp || b.img), true); UPQ.push(rec.u.map.value, rec.u.dmap.value); }
-    else { rec.mesh.material.map = mkTex(a.bmp || a.img); rec.mesh.material.needsUpdate = true; UPQ.push(rec.mesh.material.map); }
-    return rec;
-  });
-  return rec.texP;
-}
-function dropTex(rec) {
-  if (!rec.texP || !rec.mesh) return;
-  rec.texP = null; rec.mesh.visible = false; rec.mesh.material.opacity = 0;
-  if (rec.u) { [rec.u.map.value, rec.u.dmap.value].forEach(t => { const i = UPQ.indexOf(t); if (i >= 0) UPQ.splice(i, 1); freeTex(t); }); rec.u.map.value = rec.u.dmap.value = null; }
-  else if (rec.mesh.material.map) { freeTex(rec.mesh.material.map); rec.mesh.material.map = null; }
-}
-// текущая точка: текстуры всех заплаток готовим заранее, по одной (воркер) — чтобы открытие было без задержки
-let texQ = 0;
-async function warmTex(pk) {
-  const my = ++texQ;
-  Object.entries(patches).forEach(([k, r]) => { if (!k.startsWith(pk + '_')) dropTex(r); });   // чужие точки — из видеопамяти
-  await metaP; if (!META || !META.parts[pk]) return;
-  for (const gid of Object.keys(META.parts[pk])) {
-    if (my !== texQ || cur.id !== pk) return;
-    const rec = await loadPatch(pk, gid); if (!rec) continue;
-    await ensureTex(rec);
-    while (UPQ.length > 8) await new Promise(r => setTimeout(r, 60));
-  }
 }
 let order = 10; const LAST = {};
 function setTop(mesh) { mesh.renderOrder = ++order; const u = mesh.material.uniforms; if (u && u.zb) u.zb.value = Math.min(order, 20000) * 2e-7; }
@@ -613,10 +505,8 @@ function refresh(pk, instant, doneGid) {
       }
       return;
     }
-    let rec = await loadPatch(pk, gid);
-    if (rec) rec = await ensureTex(rec);
+    const rec = await loadPatch(pk, gid);
     if (!rec || cur.id !== pk || mode !== 'single' || !shownSet(pk).has(gid)) return;
-    upTex(rec.u ? rec.u.map.value : rec.mesh.material.map); if (rec.u) upTex(rec.u.dmap.value);
     if (rec.mesh.visible && rec.mesh.material.opacity >= 0.99) return;
     // уже был открыт (был внутри общей заплатки) — показываем сразу, без проявления
     const already = (GBY[gid].combo || [gid]).every(m => wasOpen.has(m)) || (doneGid && (GBY[gid].combo || [gid]).includes(doneGid));
@@ -655,7 +545,7 @@ function pick(u, v) {
   if (best) return best;
   const m = idsNow; if (!m) return 0;
   const ix = Math.min(m.w - 1, Math.floor(u * m.w)), iy = Math.min(m.h - 1, Math.floor(v * m.h));
-  return Math.round(m.data[(iy * m.w + ix) * (m.c || 4)] / ((META && META.idk) || 4));
+  return Math.round(m.data[(iy * m.w + ix) * 4] / ((META && META.idk) || 4));
 }
 let idsNow = null;
 const nameOf = (g) => (g.combo ? g.label : (LABEL[g.movs[0]] || g.label));
@@ -691,7 +581,7 @@ async function preparePoint(pt, silent) {
   let done = 0; const tot = gids.length + 1;
   const frac = () => 0.55 * (PROG[key] || 0) + 0.45 * done / tot; PREPF[key] = frac;
   const iv = setInterval(() => { if (!silent) setBoot(frac()); }, 100);
-  const pr = [silent ? prefetch('pano/' + key + (HI ? '' : '_4k') + '.jpg') : loadPano(key), loadIds(pt.id).then(() => { done++; })];
+  const pr = [loadPano(key), loadIds(pt.id).then(() => { done++; })];
   gids.forEach(g => { const p = loadPatch(pt.id, g); if (p) pr.push(p.then(() => { done++; }, () => { done++; })); else done++; });
   await Promise.allSettled(pr); clearInterval(iv);
   READY.add(key); booted = true; res();
@@ -723,7 +613,6 @@ async function warmAll() {
 async function show(pt, md, keepView) {
   await preparePoint(pt);
   const tex = await loadPano(pt.id + '_closed' + floor);
-  upTex(tex);
   const next = 1 - top, m = layers[next];
   m.material.map = tex; m.material.needsUpdate = true; m.material.opacity = 0; m.renderOrder = 2; layers[top].renderOrder = 1;
   if (!keepView) aimAt(pt);
@@ -734,9 +623,7 @@ async function show(pt, md, keepView) {
   if (md === 'single') applyOpened(pt.id, !samePt); else hideAllPatches();
   setTimeout(() => {                                   // фоновая подгрузка
     metaP.then(() => { if (META && META.parts[pt.id]) Object.keys(META.parts[pt.id]).forEach(gid => loadPatch(pt.id, gid)); });
-    trimPanos();                                     // ближайшие две точки — заранее (воркер), остальные — только файлы
-    PTS.slice().sort((a, b) => Math.hypot(a.p[0] - pt.p[0], a.p[1] - pt.p[1]) - Math.hypot(b.p[0] - pt.p[0], b.p[1] - pt.p[1])).slice(1, 3).forEach(q => loadPano(q.id + '_closed' + floor));
-    warmTex(pt.id);
+    PTS.forEach(q => loadPano(q.id + '_closed' + floor));
     warmAll();
   }, 400);
   setTimeout(() => { if (cur === pt) animPrefetch(pt.id); }, 2500);
