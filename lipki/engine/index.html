@@ -767,6 +767,9 @@ async function setGroup(gid, open, quiet) {
   // потом движется нажатый фасад (иначе сосед пропадал, а фасад появлялся мгновенно)
   const gone = [...before].filter(x => x !== gid && !opened.has(x));
   let goneAnim = false;
+  // 15.11 (пользователь: «выезжает лоток, а общий фасад дёргается к закрытому»): нажатый фасад помечаем ДО запуска анимаций соседей —
+  // их startAnim перерисовывает открытое, и без пометки фасад успевал начать гаснуть, а потом проявлялся обратно
+  if (gone.length) { if (open) HOLD.add(gid); else KEEPOPEN.add(gid); }
   for (const x of gone) {
     const kx = pk + '_' + x, rx = AREC[kx];
     if (ACT[kx]) { startAnim(pk, x, ACT[kx].rec, false); goneAnim = true; }
@@ -783,7 +786,6 @@ async function setGroup(gid, open, quiet) {
     refresh(pk, false);
   };
   if (gone.length) {
-    if (open) HOLD.add(gid); else KEEPOPEN.add(gid);
     refresh(pk, false);                 // соседи уезжают (или гаснут), нажатый фасад ждёт
     PEND[key] = setTimeout(go, goneAnim ? ANIM_DUR + 60 : 700);
   } else go();
