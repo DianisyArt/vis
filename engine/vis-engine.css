@@ -1,0 +1,78 @@
+/* vis-engine.css — оформление просмотрщика (общее для всех проектов) */
+/* Фото-просмотр 360°: панорамы Cycles; нажатие на дверцу накладывает её отрендеренную «заплатку»; 3D-режим — отдельная страница */
+:root {
+  --bg: #e9e4dc; --panel: rgba(250, 247, 242, 0.9); --ink: #2b2723; --muted: #6e665c; --line: rgba(43, 39, 35, 0.14);
+  --gold: #a8843f; --gold-ink: #fff9ee; --scene: #d9d2c7;
+  --f-display: "Unbounded", "Golos Text", system-ui, sans-serif;
+  --f-body: "Golos Text", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #1d1b19; --panel: rgba(32, 30, 27, 0.88); --ink: #efe9e1; --muted: #a79d90; --line: rgba(239, 233, 225, 0.14);
+  --gold: #c9a35c; --gold-ink: #1d1b19; --scene: #2a2723; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #1d1b19; --panel: rgba(32, 30, 27, 0.88); --ink: #efe9e1; --muted: #a79d90; --line: rgba(239, 233, 225, 0.14);
+  --gold: #c9a35c; --gold-ink: #1d1b19; --scene: #2a2723; color-scheme: dark; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--scene); color: var(--ink); font-family: var(--f-body); overflow: hidden; }
+canvas#c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+canvas#c:active { cursor: grabbing; }
+.top { position: fixed; top: calc(10px + env(safe-area-inset-top, 0px)); left: max(16px, env(safe-area-inset-left, 0px)); right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; pointer-events: none; }
+.card { pointer-events: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 10px 14px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); max-width: 340px; }
+.card h1 { font-family: var(--f-display); font-weight: 600; font-size: 16px; margin: 0 0 3px; }
+.card p { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.btn, .chip { border: 1px solid var(--line); background: var(--panel); color: var(--ink); font: 500 13px var(--f-body); border-radius: 999px; padding: 8px 13px; cursor: pointer; white-space: nowrap;
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+.btn.link { pointer-events: auto; }
+.bottom { position: fixed; left: max(16px, env(safe-area-inset-left, 0px)); right: max(16px, env(safe-area-inset-right, 0px)); bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start; pointer-events: none; }
+.row { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; max-width: 100%; padding: 2px; pointer-events: auto; }
+.row::-webkit-scrollbar { display: none; }
+.chip[aria-pressed="true"] { border-color: var(--gold); box-shadow: inset 0 0 0 1px var(--gold); }
+.chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.chip[aria-pressed="true"] .dot { background: var(--gold); }
+.seg { display: inline-flex; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 3px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); pointer-events: auto; }
+.seg button { border: 0; background: transparent; color: var(--muted); font: 500 13px var(--f-body); padding: 7px 13px; border-radius: 999px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--gold); color: var(--gold-ink); }
+.btn:focus-visible, .chip:focus-visible, .seg button:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+#hint { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 9px 14px;
+  font-size: 13.5px; color: var(--ink); pointer-events: none; transition: opacity .4s; white-space: nowrap; }
+#boot { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; background: rgba(18,16,14,.94); transition: opacity .45s, background .3s; }
+#boot.soft { background: rgba(18,16,14,.55); }
+#boot.off { opacity: 0; pointer-events: none; }
+#boot .bx { min-width: 240px; max-width: 80vw; padding: 18px 22px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); text-align: center; }
+#boot .t { font-size: 14px; margin-bottom: 10px; } #boot .n { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; margin-bottom: 10px; }
+#boot .mb { font-size: 12.5px; color: var(--muted); margin: -4px 0 10px; font-variant-numeric: tabular-nums; min-height: 1em; }
+#boot .bar { height: 4px; border-radius: 4px; background: var(--line); overflow: hidden; } #boot .bar i { display: block; height: 100%; width: 0; background: currentColor; transition: width .15s; }
+#loading { position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); bottom: calc(14px + env(safe-area-inset-bottom, 0px)); font-size: 12px; color: var(--muted);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 6px 11px; pointer-events: none; transition: opacity .3s; }
+.spot { position: fixed; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%; border: 0; padding: 0; cursor: pointer; background: transparent; display: none; }
+.spot::before { content: ""; position: absolute; inset: 9px; border-radius: 50%; background: rgba(255, 252, 245, 0.35); border: 2px solid rgba(255, 252, 245, 0.95);
+  box-shadow: 0 2px 10px rgba(0,0,0,.25); transition: transform .15s; }
+.spot:hover::before { transform: scale(1.15); }
+.spot span { position: absolute; top: 44px; left: 50%; transform: translateX(-50%); font-size: 12px; color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.6); white-space: nowrap; pointer-events: none; }
+#toast { position: fixed; left: 50%; top: calc(64px + env(safe-area-inset-top, 0px)); transform: translateX(-50%); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 12px; padding: 8px 13px; font-size: 13.5px; pointer-events: none; opacity: 0; transition: opacity .25s; white-space: nowrap; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+#toast.on { opacity: 1; } #toast span { color: var(--muted); }
+canvas#c.hot { cursor: pointer; }
+.ibtn { pointer-events: auto; width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); color: var(--ink); display: inline-grid; place-items: center;
+  cursor: pointer; padding: 0; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); flex: none; }
+.ibtn svg { width: 18px; height: 18px; }
+.ibtn:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.card { position: relative; padding-right: 40px; }
+#stats { position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); top: calc(56px + env(safe-area-inset-top, 0px)); background: rgba(20, 18, 16, .78); color: #efe9e1;
+  font: 11.5px/1.45 ui-monospace, Menlo, Consolas, monospace; padding: 7px 9px; border-radius: 10px; white-space: pre; pointer-events: none; display: none; z-index: 5; }
+body.stats #stats { display: block; }
+#bg { position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); bottom: calc(50px + env(safe-area-inset-bottom, 0px)); font-size: 12px; color: var(--muted);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 6px 11px; pointer-events: none; transition: opacity .4s; opacity: 0; font-variant-numeric: tabular-nums; }
+.card .fold { position: absolute; top: 6px; right: 6px; width: 28px; height: 28px; border: 0; background: transparent; color: var(--muted); border-radius: 50%; cursor: pointer; display: grid; place-items: center; }
+.card .fold svg { width: 16px; height: 16px; }
+#unfold { display: none; opacity: .55; width: 30px; height: 30px; }
+body.folded .card { display: none; } body.folded #unfold { display: inline-grid; }
+.tr { display: flex; gap: 8px; align-items: center; pointer-events: none; }
+/* «скрыть всё»: остаётся только эта же кнопка на своём месте, полупрозрачным глазком */
+#hideui .on { display: none; }
+body.clean #hideui .on { display: block; } body.clean #hideui .off { display: none; }
+body.clean #hideui { opacity: .45; }
+body.clean .top .card, body.clean #unfold, body.clean .top .tr > a, body.clean .bottom, body.clean #hint, body.clean #loading, body.clean #bg { visibility: hidden !important; }
+@media (max-width: 520px) { .card p { display: none; } .card h1 { font-size: 14px; margin: 0; } }
