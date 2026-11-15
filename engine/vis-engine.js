@@ -472,12 +472,15 @@ function animMesh(rec) {
   rec.mesh.renderOrder = 1e7; rec.mesh.visible = false; scene.add(rec.mesh); rec.ready = true; return rec;
 }
 function loadAnim(pk, gid, prio) {
-  const key = pk + '_' + gid; if (AREC[key]) { if (prio === 0) bumpJobs(u => u === AD + AREC[key].a.file, 0); return AREC[key].p; }
+  const key = pk + '_' + gid; if (AREC[key]) { if (prio === 0) bumpJobs(u => (AREC[key].a.files || [AREC[key].a.file]).some(f => u === AD + f), 0); return AREC[key].p; }
   const a = ANIM && ANIM[pk] && ANIM[pk][gid]; if (!a) return null;
   const rec = AREC[key] = { a, ready: false };
   if (wkInit()) {
     const src = AD + a.file, [cw, ch] = a.cell, ms = Math.min(1, 160 / Math.max(cw, ch)), mw = Math.max(1, Math.round(cw * ms)), mh = Math.max(1, Math.round(ch * ms));
-    rec.p = prefetch(src).then(u => wkJob(src, { url: new URL(u || src, location.href).href, anim: { n: a.n, cols: a.cols, cw, ch, mw, mh } }, prio == null ? 2 : prio)).then(d => {
+    // кадров может быть несколько атласов (60 кадров в полном разрешении не влезают в один) — a.files, по a.per кадров
+    const files = a.files || [a.file], per = a.per || a.n;
+    rec.p = Promise.all(files.map((f, i) => { const s_ = AD + f; return prefetch(s_).then(u => wkJob(s_, { url: new URL(u || s_, location.href).href, anim: { n: Math.min(per, a.n - i * per), cols: a.cols, cw, ch, mw, mh } }, prio == null ? 2 : prio)); })).then(ds => {
+      const d = { bmps: [].concat(...ds.map(x => x.bmps)), U: ds[0].U }; ds.slice(1).forEach(x => { for (let i = 0; i < d.U.length; i++) d.U[i] |= x.U[i]; });
       if (AREC[key] !== rec) { d.bmps.forEach(b => b.close()); return null; }
       rec.tex = d.bmps.map(b => { const t = new THREE.Texture(b); t.flipY = false; t.colorSpace = THREE.NoColorSpace; t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; t.needsUpdate = true; UPQ.push(t); return t; });
       let n = 0; for (let i = 0; i < d.U.length; i++) n += d.U[i];

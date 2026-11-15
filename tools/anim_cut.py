@@ -8,7 +8,7 @@ from PIL import Image
 from scipy import ndimage
 SRC, OUT = sys.argv[1:3]
 PTS = sys.argv[3].split(",") if len(sys.argv) > 3 else sorted(d for d in os.listdir(SRC) if os.path.isdir(os.path.join(SRC, d)))
-W = int(os.environ.get('ANIMRES', '2048')); H = W // 2; IDK = 3.0; N = 30
+W = int(os.environ.get('ANIMRES', '2048')); H = W // 2; IDK = 3.0; N = int(os.environ.get('ANIMN', '30'))
 AO = os.path.join(OUT, "anim"); os.makedirs(AO, exist_ok=True)
 JF = os.path.join(AO, "anim.json")
 J = json.load(open(JF)) if os.path.exists(JF) else {}
@@ -56,20 +56,32 @@ for pk in PTS:
         if U.sum() < 30: print("пусто", pk, gid); continue
         ys, xs = np.nonzero(U); y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
         cw0, ch0 = int(x1 - x0), int(y1 - y0)
-        sc = min(1.0, (14e6 / (cw0 * ch0 * (N - 1))) ** 0.5)       # атлас ≤ ~14 Мпикс (iOS, лимит WebP 16383)
+        # атлас ≤ ~14 Мпикс (iOS, лимит WebP 16383). 15.11: если кадров много (60), не уменьшаем кадры, а делим на несколько атласов
+        NF = N - 1; sc = min(1.0, (14e6 / (cw0 * ch0)) ** 0.5)
         cw, ch = max(1, int(cw0 * sc)), max(1, int(ch0 * sc))
-        COLS = max(1, min(5, 16000 // cw)); ROWS = (N - 1 + COLS - 1) // COLS
-        while ROWS * ch > 16000:
-            sc *= 0.9; cw, ch = max(1, int(cw0 * sc)), max(1, int(ch0 * sc)); COLS = max(1, min(5, 16000 // cw)); ROWS = (N - 1 + COLS - 1) // COLS
-        AT = np.zeros((ch * ROWS, cw * COLS, 4), np.float32)
-        for k, (fr, al) in enumerate(zip(frames, masks)):
-            r_, c_ = divmod(k, COLS)
-            cell = np.dstack([fr[y0:y1, x0:x1], al[y0:y1, x0:x1, None]])
-            if sc < 1: cell = np.dstack([np.asarray(Image.fromarray((cell[..., i] * 255).astype(np.uint8)).resize((cw, ch), Image.LANCZOS), np.float32) / 255 for i in range(4)])
-            AT[r_ * ch:(r_ + 1) * ch, c_ * cw:(c_ + 1) * cw] = cell
-        Image.fromarray((AT * 255 + 0.5).astype(np.uint8), "RGBA").save(os.path.join(od, "%s.webp" % gid), quality=80, method=4, alpha_quality=70)
+        COLS = max(1, min(5, 16000 // cw))
+        PER = max(1, min(NF, int(14e6 // (cw * ch)), COLS * max(1, 16000 // ch)))
+        if os.environ.get('ONEATLAS'):                                   # старое поведение: один атлас, кадры уменьшаются
+            sc = min(1.0, (14e6 / (cw0 * ch0 * NF)) ** 0.5); cw, ch = max(1, int(cw0 * sc)), max(1, int(ch0 * sc)); COLS = max(1, min(5, 16000 // cw)); PER = NF
+            while ((PER + COLS - 1) // COLS) * ch > 16000:
+                sc *= 0.9; cw, ch = max(1, int(cw0 * sc)), max(1, int(ch0 * sc)); COLS = max(1, min(5, 16000 // cw))
+        NA = (NF + PER - 1) // PER; PER = (NF + NA - 1) // NA            # поровну по атласам
+        ROWS = (PER + COLS - 1) // COLS
+        files = []
+        for ai in range(NA):
+            AT = np.zeros((ch * ROWS, cw * COLS, 4), np.float32)
+            for j, k in enumerate(range(ai * PER, min(NF, (ai + 1) * PER))):
+                fr, al = frames[k], masks[k]
+                r_, c_ = divmod(j, COLS)
+                cell = np.dstack([fr[y0:y1, x0:x1], al[y0:y1, x0:x1, None]])
+                if sc < 1: cell = np.dstack([np.asarray(Image.fromarray((cell[..., i] * 255).astype(np.uint8)).resize((cw, ch), Image.LANCZOS), np.float32) / 255 for i in range(4)])
+                AT[r_ * ch:(r_ + 1) * ch, c_ * cw:(c_ + 1) * cw] = cell
+            fn = "%s.webp" % gid if ai == 0 else "%s_%d.webp" % (gid, ai)
+            Image.fromarray((AT * 255 + 0.5).astype(np.uint8), "RGBA").save(os.path.join(od, fn), quality=80, method=4, alpha_quality=70)
+            files.append("%s/%s" % (pk, fn))
         XS = W // 2 if m.get("shift") else 0   # кадр с камерой, повёрнутой на 180° (через шов): px в координатах панорамы, может быть > W
-        J[pk][gid] = {"px": [int(X0 + x0 + XS), int(Y0 + y0), int(X0 + x1 + XS), int(Y0 + y1)], "n": N - 1, "cols": COLS, "cell": [cw, ch], "sc": round(cw / cw0, 5), "res": W, "file": "%s/%s.webp" % (pk, gid)}
+        J[pk][gid] = {"px": [int(X0 + x0 + XS), int(Y0 + y0), int(X0 + x1 + XS), int(Y0 + y1)], "n": N - 1, "cols": COLS, "cell": [cw, ch], "sc": round(cw / cw0, 5), "res": W, "file": files[0]}
+        if NA > 1: J[pk][gid].update({"files": files, "per": PER})
         print(pk, gid, x1 - x0, y1 - y0, flush=True)
     json.dump(J, open(JF, "w"), ensure_ascii=False)
 print("ok")

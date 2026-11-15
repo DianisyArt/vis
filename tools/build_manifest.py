@@ -29,7 +29,8 @@ for pk in sorted(P['parts']):
             nm += ['parts/%s_%s_%d.webp' % (pk, gid, i), 'parts/%s_%s_%d_d.png' % (pk, gid, i)]
         files.append(pack('parts/%s_%s.pack' % (pk, gid), nm))
     for gid, a in (A.get(pk) or {}).items():
-        u = '../pano/anim/' + a['file']; files.append([u, os.path.getsize(u), None])
+        for f in a.get('files') or [a['file']]:
+            u = '../pano/anim/' + f; files.append([u, os.path.getsize(u), None])
     out['points'][pk] = {'files': files, 'bytes': sum(f[1] for f in files)}
     print(pk, len(files), 'файлов, %.1f МБ' % (out['points'][pk]['bytes'] / 1048576))
 json.dump(out, open('points.json', 'w'), ensure_ascii=False, separators=(',', ':'))
